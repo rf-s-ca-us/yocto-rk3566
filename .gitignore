@@ -3,6 +3,8 @@
 !/.gitignore
 !/README.md
 !/setup.sh
+!/LICENSE
+!/LICENSES/
 !/meta-lubancat/
 !/ci/
 !/.github/
