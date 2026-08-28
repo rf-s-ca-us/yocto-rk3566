@@ -41,6 +41,14 @@ bbappend 最后生效。
 工具链、layer 结构、machine conf、镜像通路整条链是通的,再换成照原理图写的
 自有 dts,这样"仓建错了"和"引脚填错了"不会混在一起。
 
+## 补丁与贡献
+
+本 layer 的 patch 直接在 <https://github.com/rf-s-ca-us/yocto-rk3566> 提 PR,
+不往上游 `meta-rockchip` 送——这里的内容全是板级私有的,对上游没有意义。
+
+针对 vendor 内核的 patch 放在
+`recipes-kernel/linux/files/`,经 `linux-rockchip_%.bbappend` 挂进去。
+
 ## 维护
 
 Maintainer: jx.song <jx.song.zuvi@gmail.com>
