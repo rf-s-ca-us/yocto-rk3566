@@ -1,0 +1,168 @@
+name: build
+
+# 分轮种 sstate:第一轮冷编,编到墙钟上限就把 sstate 推 R2;下一轮从 mirror
+# 拉回来接着编。几轮之后 sstate 种满,此后每次改动只编增量。
+#
+# 为什么种在 CI 而不是本机:没有 uninative 时 sstate 绑定构建机的发行版
+# (见 poky 的 conf/distro/include/yocto-uninative.inc 注释)。种和用都在
+# ubuntu-latest 上,发行版天然一致,命中率才有保障。
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: bitbake 目标
+        default: lubancat-image-minimal
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE*', 'LICENSES/**']
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # GitHub 的硬顶是 360 分钟,写更大的值会被静默截断。
+    timeout-minutes: 350
+
+    env:
+      TARGET: ${{ github.event.inputs.target || 'lubancat-image-minimal' }}
+      MACHINE: rk3566-lubancat
+      # bitbake 的墙钟上限,必须显著小于 job 的 350 分钟。
+      # job 被 GitHub 砍掉时后续 step 根本不会执行(if: always() 也救不回来),
+      # 那一轮编的东西就全白费。所以超时必须由 shell 层的 timeout 控制,
+      # 留足余量给上传 sstate。
+      BITBAKE_TIMEOUT: 260m
+
+    steps:
+      - name: 腾磁盘
+        run: |
+          echo "### 清理前" >> $GITHUB_STEP_SUMMARY
+          df -h / | tail -1 >> $GITHUB_STEP_SUMMARY
+          # 逐条列出要删什么,不用第三方 action —— 它会拿到本 job 的
+          # 全部上下文,而这里只需要几条 rm。
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          echo "### 清理后" >> $GITHUB_STEP_SUMMARY
+          df -h / | tail -1 >> $GITHUB_STEP_SUMMARY
+
+      - name: 装 Yocto 宿主依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            chrpath cpio diffstat gawk lz4 zstd file \
+            build-essential texinfo unzip wget git python3 python3-venv
+
+      - name: 生成 en_US.UTF-8 locale
+        # bitbake 强制要求 UTF-8 locale,只有 C.utf8 会启动失败
+        run: sudo locale-gen en_US.UTF-8
+
+      - uses: actions/checkout@v4
+
+      - name: 拉第三方 layer
+        run: ./setup.sh
+
+      - name: 生成构建配置
+        run: |
+          ROOT=$PWD
+          . layers/poky/oe-init-build-env build >/dev/null
+          cat > conf/bblayers.conf <<EOF
+          POKY_BBLAYERS_CONF_VERSION = "2"
+          BBPATH = "\${TOPDIR}"
+          BBFILES ?= ""
+          BBLAYERS ?= " \\
+            $ROOT/layers/poky/meta \\
+            $ROOT/layers/poky/meta-poky \\
+            $ROOT/layers/meta-openembedded/meta-oe \\
+            $ROOT/layers/meta-openembedded/meta-python \\
+            $ROOT/layers/meta-openembedded/meta-networking \\
+            $ROOT/layers/meta-rockchip \\
+            $ROOT/meta-lubancat \\
+          "
+          EOF
+          {
+            echo "MACHINE = \"$MACHINE\""
+            echo 'INHERIT += "rm_work"'
+            echo 'BB_NUMBER_THREADS = "4"'
+            echo 'PARALLEL_MAKE = "-j 4"'
+          } >> conf/local.conf
+          if [ -n "${{ vars.SSTATE_BASE_URL }}" ]; then
+            echo 'SSTATE_MIRRORS ?= "file://.* ${{ vars.SSTATE_BASE_URL }}/sstate/PATH;downloadfilename=PATH"' >> conf/local.conf
+            echo 'SOURCE_MIRROR_URL ?= "${{ vars.SSTATE_BASE_URL }}/downloads/"' >> conf/local.conf
+            echo 'INHERIT += "own-mirrors"' >> conf/local.conf
+          else
+            echo "::warning::未配置 vars.SSTATE_BASE_URL,本轮为纯冷编"
+          fi
+
+      - name: 构建
+        id: bitbake
+        run: |
+          export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+          . layers/poky/oe-init-build-env build >/dev/null
+          set +e
+          timeout "$BITBAKE_TIMEOUT" bitbake "$TARGET"
+          code=$?
+          set -e
+          echo "code=$code" >> $GITHUB_OUTPUT
+          case $code in
+            0)   echo "outcome=完成" >> $GITHUB_OUTPUT ;;
+            124) echo "outcome=墙钟到点,本轮未编完(正常,下一轮接着来)" >> $GITHUB_OUTPUT ;;
+            *)   echo "outcome=构建失败" >> $GITHUB_OUTPUT ;;
+          esac
+
+      # 无论编完没编完都要传 —— 半轮的 sstate 也是下一轮的起点,
+      # 这正是分轮种 sstate 的全部意义。
+      - name: 推 sstate 与 downloads 到 R2
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          # 凭据判断放在 shell 里,不放 if: —— 步骤级 env 在该步骤自己的
+          # if 表达式里取不到,那样写这个 step 会被无声跳过。
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+            echo "::warning::未配置 R2 凭据,跳过上传;本轮 sstate 不会留存"
+            exit 0
+          fi
+          ep="${{ secrets.R2_ENDPOINT }}"
+          bucket="${{ vars.R2_BUCKET }}"
+          aws s3 sync build/sstate-cache "s3://$bucket/sstate/" \
+            --endpoint-url "$ep" --only-show-errors --size-only
+          aws s3 sync build/downloads "s3://$bucket/downloads/" \
+            --endpoint-url "$ep" --only-show-errors --size-only \
+            --exclude "*.lock" --exclude "*.tmp" --exclude "git2/*"
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "## 本轮结果"
+            echo
+            echo "- 目标:\`$TARGET\`  MACHINE:\`$MACHINE\`"
+            echo "- 结果:${{ steps.bitbake.outputs.outcome }}(exit ${{ steps.bitbake.outputs.code }})"
+            echo
+            echo "## 占用(回答设计稿 8.2 的两条待查证)"
+            echo '```'
+            df -h / | tail -1
+            du -sh build/sstate-cache build/downloads build/tmp 2>/dev/null || true
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+      # 墙钟到点不算失败:那是分轮种 sstate 的预期状态。
+      # 只有真正的构建错误才让这个 job 变红。
+      - name: 判定
+        if: always()
+        run: |
+          code="${{ steps.bitbake.outputs.code }}"
+          # 步骤在 bitbake 跑起来之前就挂掉时 outputs 为空,当作失败处理
+          code="${code:-1}"
+          [ "$code" = "0" ] || [ "$code" = "124" ] || exit "$code"
