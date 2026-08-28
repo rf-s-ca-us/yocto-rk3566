@@ -61,6 +61,12 @@ jobs:
             chrpath cpio diffstat gawk lz4 zstd file \
             build-essential texinfo unzip wget git python3 python3-venv
 
+      - name: 放开非特权 user namespace
+        # Ubuntu 24.04 默认用 AppArmor 禁掉非特权 user namespace,而 bitbake
+        # 需要它(pseudo 靠它伪造文件属主)。不放开会直接:
+        #   ERROR: User namespaces are not usable by BitBake, possibly due to AppArmor.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: 生成 en_US.UTF-8 locale
         # bitbake 强制要求 UTF-8 locale,只有 C.utf8 会启动失败
         run: sudo locale-gen en_US.UTF-8
@@ -93,6 +99,13 @@ jobs:
             echo 'INHERIT += "rm_work"'
             echo 'BB_NUMBER_THREADS = "4"'
             echo 'PARALLEL_MAKE = "-j 4"'
+            # poky 默认 BB_HASHSERVE = "auto",会起一个本地哈希等价服务,
+            # 它的库在 build 目录里、每轮 CI 都被丢掉 —— 于是每轮算出的
+            # unihash 都不同,从 mirror 拉什么都对不上。bitbake 只发一条
+            # WARNING,构建照常绿,但分轮种 sstate 会退化成每轮冷编。
+            # 关掉它,用朴素 task hash,mirror 才可能命中。
+            echo 'BB_HASHSERVE = ""'
+            echo 'BB_SIGNATURE_HANDLER = "OEBasicHash"'
           } >> conf/local.conf
           if [ -n "${{ vars.SSTATE_BASE_URL }}" ]; then
             echo 'SSTATE_MIRRORS ?= "file://.* ${{ vars.SSTATE_BASE_URL }}/sstate/PATH;downloadfilename=PATH"' >> conf/local.conf
@@ -135,11 +148,19 @@ jobs:
           fi
           ep="${{ secrets.R2_ENDPOINT }}"
           bucket="${{ vars.R2_BUCKET }}"
-          aws s3 sync build/sstate-cache "s3://$bucket/sstate/" \
-            --endpoint-url "$ep" --only-show-errors --size-only
-          aws s3 sync build/downloads "s3://$bucket/downloads/" \
-            --endpoint-url "$ep" --only-show-errors --size-only \
-            --exclude "*.lock" --exclude "*.tmp" --exclude "git2/*"
+          # 构建早期就挂掉时这两个目录可能压根不存在,而 aws s3 sync 对着
+          # 不存在的路径会 exit 255 —— 那会把真正的失败原因盖掉。
+          if [ -d build/sstate-cache ]; then
+            aws s3 sync build/sstate-cache "s3://$bucket/sstate/" \
+              --endpoint-url "$ep" --only-show-errors --size-only
+          else
+            echo "::warning::build/sstate-cache 不存在,构建没走到产出 sstate 就挂了"
+          fi
+          if [ -d build/downloads ]; then
+            aws s3 sync build/downloads "s3://$bucket/downloads/" \
+              --endpoint-url "$ep" --only-show-errors --size-only \
+              --exclude "*.lock" --exclude "*.tmp" --exclude "git2/*"
+          fi
 
       - name: 汇总
         if: always()
