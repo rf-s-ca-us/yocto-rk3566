@@ -165,18 +165,20 @@ jobs:
       - name: 汇总
         if: always()
         run: |
+          # 同时写 step summary 和 stdout —— summary 好看但不进日志,
+          # 而日志才是能被 API 读到的那份。只写 summary 等于只给人看。
           {
             echo "## 本轮结果"
             echo
             echo "- 目标:\`$TARGET\`  MACHINE:\`$MACHINE\`"
             echo "- 结果:${{ steps.bitbake.outputs.outcome }}(exit ${{ steps.bitbake.outputs.code }})"
             echo
-            echo "## 占用(回答设计稿 8.2 的两条待查证)"
+            echo "## 占用"
             echo '```'
             df -h / | tail -1
             du -sh build/sstate-cache build/downloads build/tmp 2>/dev/null || true
             echo '```'
-          } >> $GITHUB_STEP_SUMMARY
+          } | tee -a $GITHUB_STEP_SUMMARY
 
       # 墙钟到点不算失败:那是分轮种 sstate 的预期状态。
       # 只有真正的构建错误才让这个 job 变红。
