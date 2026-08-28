@@ -1,0 +1,75 @@
+name: preflight
+
+# 在烧掉 4 小时冷编之前,先花一分钟确认 R2 通道是通的。
+# 上传和下载是两条独立通道,必须分别验:
+#   上传 = S3 API + 凭据
+#   下载 = 匿名 HTTPS(bitbake 的 SSTATE_MIRRORS 只发普通 GET,不带签名)
+# 只验其中一条会漏掉最常见的配置错误:凭据对但 bucket 没开公开读。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  r2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      SSTATE_BASE_URL: ${{ vars.SSTATE_BASE_URL }}
+
+    steps:
+      - name: 五项配置齐不齐
+        run: |
+          fail=0
+          for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET SSTATE_BASE_URL; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::缺 $v"
+              fail=1
+            else
+              echo "✓ $v 已配置"
+            fi
+          done
+          exit $fail
+
+      - name: 凭据可用 —— 能列出 bucket
+        run: aws s3 ls "s3://$R2_BUCKET/" --endpoint-url "$R2_ENDPOINT"
+
+      - name: 能写入
+        run: |
+          echo "preflight-$GITHUB_RUN_ID" > probe.txt
+          aws s3 cp probe.txt "s3://$R2_BUCKET/preflight/probe.txt" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors
+
+      - name: 匿名可读 —— 这条才是 SSTATE_MIRRORS 真正走的路
+        run: |
+          url="$SSTATE_BASE_URL/preflight/probe.txt"
+          # 不带任何凭据,模拟 bitbake 拉 sstate 的请求
+          if ! got=$(curl -fsS --retry 4 --retry-delay 3 "$url"); then
+            echo "::error::匿名读失败 —— bucket 的 Public Development URL 没开,或 SSTATE_BASE_URL 填错"
+            exit 1
+          fi
+          if [ "$got" != "preflight-$GITHUB_RUN_ID" ]; then
+            echo "::error::读到的内容不对,SSTATE_BASE_URL 可能指向了别的 bucket"
+            exit 1
+          fi
+          echo "✓ 匿名读通过"
+
+      - name: 清理探针
+        if: always()
+        run: |
+          aws s3 rm "s3://$R2_BUCKET/preflight/probe.txt" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors || true
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "## R2 通道自检"
+            echo
+            echo "上传通道(S3 API + 凭据)与下载通道(匿名 HTTPS)分别验过。"
+            echo "两条都绿才代表 \`SSTATE_MIRRORS\` 能用。"
+          } >> $GITHUB_STEP_SUMMARY
