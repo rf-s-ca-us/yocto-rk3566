@@ -1,0 +1,10 @@
+# —— 白名单式:默认忽略一切,只放行自己写的东西 ——
+/*
+!/.gitignore
+!/README.md
+!/setup.sh
+!/meta-lubancat/
+!/ci/
+!/.github/
+
+# setup.sh 拉下来的第三方 layer 与 bitbake 产物都落在被忽略的路径下
