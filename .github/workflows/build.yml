@@ -194,8 +194,10 @@ jobs:
           find "$d" -maxdepth 1 -type f \( \
               -name '*.wic*' -o -name '*.img' -o -name '*.bin' \
               -o -name '*.itb' -o -name '*.dtb' -o -name 'Image*' \
-              -o -name '*.parameter' -o -name 'parameter' \) \
-            -not -name '*.rootfs.ext4' \
+              -o -name '*.parameter' -o -name 'parameter' \
+              -o -name 'loader.bin-*' -o -name 'idblock.img-*' \
+              -o -name 'trust.img-*' \) \
+            -not -name '*.rootfs.ext4' -not -name '*.ufs.wic' \
             -exec cp -L {} out/ \; 2>/dev/null || true
 
           echo "=== 捞出来的 ==="
