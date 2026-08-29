@@ -183,12 +183,23 @@ jobs:
         run: |
           d=build/tmp/deploy/images/$MACHINE
           [ -d "$d" ] || { echo "::warning::没有镜像目录,构建没走到出片"; exit 0; }
+
+          # 先把真实产出列出来 —— 上一轮就是靠猜文件名,一个都没匹配上。
+          echo "=== deploy 目录实际内容 ==="
+          ls -la "$d"
+
           mkdir -p out
-          # 只捞真正要烧的东西,别把整个 deploy 目录几个 G 都传上去
-          find "$d" -maxdepth 1 \( -name '*.wic.*' -o -name '*.rootfs.img' \
-            -o -name 'u-boot*.bin' -o -name 'idbloader*.img' \) \
+          # 放宽匹配:不同 IMAGE_FSTYPES 产出的扩展名差别很大。
+          # -type f 排掉软链(deploy 目录里大量同名软链指向带时间戳的实体)。
+          find "$d" -maxdepth 1 -type f \( \
+              -name '*.wic*' -o -name '*.img' -o -name '*.bin' \
+              -o -name '*.itb' -o -name '*.ext4*' -o -name '*.dtb' \
+              -o -name 'Image*' \) \
             -exec cp -L {} out/ \; 2>/dev/null || true
+
+          echo "=== 捞出来的 ==="
           ls -lh out/ || true
+          du -sh out/ || true
 
       - uses: actions/upload-artifact@v4
         if: always()
