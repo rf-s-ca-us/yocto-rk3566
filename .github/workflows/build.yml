@@ -193,8 +193,9 @@ jobs:
           # -type f 排掉软链(deploy 目录里大量同名软链指向带时间戳的实体)。
           find "$d" -maxdepth 1 -type f \( \
               -name '*.wic*' -o -name '*.img' -o -name '*.bin' \
-              -o -name '*.itb' -o -name '*.ext4*' -o -name '*.dtb' \
-              -o -name 'Image*' \) \
+              -o -name '*.itb' -o -name '*.dtb' -o -name 'Image*' \
+              -o -name '*.parameter' -o -name 'parameter' \) \
+            -not -name '*.rootfs.ext4' \
             -exec cp -L {} out/ \; 2>/dev/null || true
 
           echo "=== 捞出来的 ==="
