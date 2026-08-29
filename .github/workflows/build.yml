@@ -121,8 +121,13 @@ jobs:
           export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
           . layers/poky/oe-init-build-env build >/dev/null
           set +e
-          timeout "$BITBAKE_TIMEOUT" bitbake "$TARGET"
-          code=$?
+          # 存一份完整输出:sstate 命中率打印在 bitbake 输出的开头,
+          # 而 job 日志只能从末尾读,够不着。存下来才能事后捞。
+          # 注意此处 cwd 已被 oe-init-build-env 切进 build/,
+          # 所以写 bitbake.log 而不是 build/bitbake.log —— 后续步骤
+          # 的 cwd 是仓根,它们读的才是 build/bitbake.log。
+          timeout "$BITBAKE_TIMEOUT" bitbake "$TARGET" 2>&1 | tee bitbake.log
+          code=${PIPESTATUS[0]}
           set -e
           echo "code=$code" >> $GITHUB_OUTPUT
           case $code in
@@ -130,6 +135,17 @@ jobs:
             124) echo "outcome=墙钟到点,本轮未编完(正常,下一轮接着来)" >> $GITHUB_OUTPUT ;;
             *)   echo "outcome=构建失败" >> $GITHUB_OUTPUT ;;
           esac
+
+      - name: sstate 命中率
+        if: always()
+        run: |
+          # 这一行是判断 mirror 到底有没有生效的唯一权威,
+          # 靠"这轮比上轮快多少"倒推是猜。
+          echo "## sstate 命中率" | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' | tee -a $GITHUB_STEP_SUMMARY
+          grep -E "Sstate summary|Sstate mirror" build/bitbake.log | tail -5 \
+            | tee -a $GITHUB_STEP_SUMMARY || echo "(没找到 Sstate summary 行)"
+          echo '```' | tee -a $GITHUB_STEP_SUMMARY
 
       # 无论编完没编完都要传 —— 半轮的 sstate 也是下一轮的起点,
       # 这正是分轮种 sstate 的全部意义。
@@ -161,6 +177,26 @@ jobs:
               --endpoint-url "$ep" --only-show-errors --size-only \
               --exclude "*.lock" --exclude "*.tmp" --exclude "git2/*"
           fi
+
+      - name: 上传可烧写镜像
+        if: always()
+        run: |
+          d=build/tmp/deploy/images/$MACHINE
+          [ -d "$d" ] || { echo "::warning::没有镜像目录,构建没走到出片"; exit 0; }
+          mkdir -p out
+          # 只捞真正要烧的东西,别把整个 deploy 目录几个 G 都传上去
+          find "$d" -maxdepth 1 \( -name '*.wic.*' -o -name '*.rootfs.img' \
+            -o -name 'u-boot*.bin' -o -name 'idbloader*.img' \) \
+            -exec cp -L {} out/ \; 2>/dev/null || true
+          ls -lh out/ || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lubancat-image
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: 汇总
         if: always()
