@@ -163,17 +163,23 @@ jobs:
             echo "::warning::没有 rootfs.manifest,构建没走到出片"
             exit 0
           fi
+          # 前缀匹配,不要求后面紧跟空格:podman 的 RDEPENDS 里 OCI runtime 是
+          # 变量 ${VIRTUAL-RUNTIME_container_runtime},实际包名带后缀
+          # (runc-opencontainers 之类)。上一轮写成 '^runc ' 就漏掉了,
+          # 于是"缺 runtime"是模式的错,不是镜像的错。
+          pat='^(podman|conmon|catatonit|crun|runc|netavark|aardvark|slirp4netns|fuse-overlayfs|skopeo|iptables|containers|nsenter)'
           {
             echo "## 镜像内容自查"
             echo
             echo "- 已装包总数:$(wc -l < "$m")"
             echo
             echo '```'
-            # 容器运行时这一串缺任何一个,podman 都跑不起来
-            grep -E '^(podman|crun|runc|conmon|netavark|aardvark-dns|slirp4netns|containers-common|catatonit) ' "$m" \
-              || echo "(没有任何容器相关包 —— podman 没进镜像)"
+            grep -E "$pat" "$m" || echo "(没有任何容器相关包 —— podman 没进镜像)"
             echo '```'
           } | tee -a $GITHUB_STEP_SUMMARY
+          # OCI runtime 是硬门槛:没有它 podman 装了也跑不起来,而构建照样绿
+          grep -qE '^(crun|runc)' "$m" \
+            || echo "::warning::manifest 里没有 crun/runc —— podman 缺 OCI runtime,容器起不来"
 
       # 无论编完没编完都要传 —— 半轮的 sstate 也是下一轮的起点,
       # 这正是分轮种 sstate 的全部意义。
@@ -227,6 +233,8 @@ jobs:
               -o -name 'trust.img-*' \) \
             -not -name '*.rootfs.ext4' -not -name '*.ufs.wic' \
             -exec cp -L {} out/ \; 2>/dev/null || true
+          # 已装包清单一起带上:才能离线核对镜像里到底有什么
+          cp -L "$d"/*.rootfs.manifest out/ 2>/dev/null || true
 
           echo "=== 捞出来的 ==="
           ls -lh out/ || true
