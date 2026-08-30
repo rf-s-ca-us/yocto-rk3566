@@ -2,8 +2,8 @@
 
 用 Yocto **scarthgap**(5.0 LTS)把 RK3566 板子 `rk3566-lubancat` 从零跑起来。
 
-内核走 Rockchip vendor 5.10(`meta-rockchip` 现成 recipe),NPU 因此可用;
-代价是 DTS bindings 是 Rockchip 私有、无上游路径。取舍见设计稿。
+内核走 Rockchip vendor 6.1(`meta-rockchip` 在 scarthgap 上的默认值),NPU 因此
+可用;代价是 DTS bindings 是 Rockchip 私有、无上游路径。取舍见设计稿。
 
 ## 目录
 
@@ -16,7 +16,7 @@
 ## 快速开始
 
 ```sh
-./setup.sh                                  # 拉 poky / meta-openembedded / meta-rockchip
+./setup.sh                                  # 拉 poky / meta-openembedded / meta-rockchip / meta-virtualization
 ROOT=$PWD                                   # oe-init-build-env 会切目录,先存下来
 . layers/poky/oe-init-build-env build
 ```
@@ -30,7 +30,9 @@ BBLAYERS ?= " \
   $ROOT/layers/meta-openembedded/meta-oe \
   $ROOT/layers/meta-openembedded/meta-python \
   $ROOT/layers/meta-openembedded/meta-networking \
+  $ROOT/layers/meta-openembedded/meta-filesystems \
   $ROOT/layers/meta-rockchip \
+  $ROOT/layers/meta-virtualization \
   $ROOT/meta-lubancat \
 "
 ```
@@ -39,8 +41,14 @@ BBLAYERS ?= " \
 
 ```
 MACHINE = "rk3566-lubancat"
+DISTRO  = "lubancat"
 INHERIT += "rm_work"
 ```
+
+`DISTRO` 不能省。镜像里有 podman 靠的是 `DISTRO_FEATURES` 里的
+`virtualization`,而那是配置级变量、recipe 改不动——它定义在
+`meta-lubancat/conf/distro/lubancat.conf`,只有设了 `DISTRO` 才会被读进来。
+用默认的 `poky` 编,能编过,但编出来的镜像里没有容器运行时。
 
 然后 `bitbake lubancat-image-minimal`。
 
