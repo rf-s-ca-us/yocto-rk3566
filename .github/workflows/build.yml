@@ -174,7 +174,10 @@ jobs:
             echo "- 已装包总数:$(wc -l < "$m")"
             echo
             echo '```'
-            grep -E "$pat" "$m" || echo "(没有任何容器相关包 —— podman 没进镜像)"
+            # iptables 会拆出 89 个 iptables-module-* 子包,全打出来会把
+            # 真正要看的七八行淹掉。留主包,过滤子包。
+            grep -E "$pat" "$m" | grep -Ev '^iptables-module-[a-z0-9]' \
+              || echo "(没有任何容器相关包 —— podman 没进镜像)"
             echo '```'
           } | tee -a $GITHUB_STEP_SUMMARY
           # OCI runtime 是硬门槛:没有它 podman 装了也跑不起来,而构建照样绿
