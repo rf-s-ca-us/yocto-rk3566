@@ -184,6 +184,27 @@ jobs:
           grep -qE '^(crun|runc)' "$m" \
             || echo "::warning::manifest 里没有 crun/runc —— podman 缺 OCI runtime,容器起不来"
 
+          # 包在不在,和"运行时要的那几个文件在不在",是两件事。
+          # podman 没有 /etc/containers/policy.json 会在 pull 时直接失败
+          # (unable to load signature policy),而这在构建期完全看不出来。
+          # rootfs.tar.gz 就在 deploy 里,列出来看是唯一确定的答案。
+          t=$(ls -1 "$d"/*.rootfs.tar.gz 2>/dev/null | head -1) || true
+          if [ -n "${t:-}" ]; then
+            {
+              echo
+              echo "### 运行时关键文件"
+              echo '```'
+              # grep 放管道末尾才拿得到它的退出码 —— 后面再接 sort 的话
+              # 管道状态就是 sort 的 0,"一个都没有"这条永远不会打印
+              tar tzf "$t" | sort \
+                | grep -E '(etc/containers/|usr/share/containers/|bin/(podman|runc|crun|conmon|netavark|aardvark-dns|slirp4netns|catatonit)$)' \
+                || echo "(一个都没有)"
+              echo '```'
+            } | tee -a $GITHUB_STEP_SUMMARY
+          else
+            echo "::warning::没有 rootfs.tar.gz,跳过文件级检查"
+          fi
+
       # 无论编完没编完都要传 —— 半轮的 sstate 也是下一轮的起点,
       # 这正是分轮种 sstate 的全部意义。
       - name: 推 sstate 与 downloads 到 R2
