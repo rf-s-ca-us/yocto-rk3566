@@ -26,6 +26,9 @@ mkdir -p "$LAYERS"
 fetch https://github.com/yoctoproject/poky.git              poky
 fetch https://github.com/openembedded/meta-openembedded.git meta-openembedded
 fetch https://github.com/JeffyCN/meta-rockchip.git          meta-rockchip
+# 官方仓在 git.yoctoproject.org,GitHub 上没有官方镜像(yoctoproject/
+# meta-virtualization 是 404,能搜到的 GitHub 副本都是第三方 fork)。
+fetch https://git.yoctoproject.org/meta-virtualization        meta-virtualization
 
 echo
 echo "layer 就位。下一步:"

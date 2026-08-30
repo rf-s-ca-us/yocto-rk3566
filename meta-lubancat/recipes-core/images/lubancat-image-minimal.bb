@@ -14,3 +14,8 @@ inherit rockchip-image
 IMAGE_FEATURES:append = " ssh-server-openssh"
 
 IMAGE_INSTALL:append = " kernel-modules"
+
+# Hermes Agent 以容器跑:它要 Python 3.11 + Node.js + ripgrep + ffmpeg,
+# 全塞进 rootfs 等于把镜像和它的版本焊死。podman 无守护进程,不像 docker
+# 那样常驻一个 root daemon,在单板上更划算。
+IMAGE_INSTALL:append = " podman"

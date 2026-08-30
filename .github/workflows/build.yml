@@ -90,12 +90,17 @@ jobs:
             $ROOT/layers/meta-openembedded/meta-oe \\
             $ROOT/layers/meta-openembedded/meta-python \\
             $ROOT/layers/meta-openembedded/meta-networking \\
+            $ROOT/layers/meta-openembedded/meta-filesystems \\
             $ROOT/layers/meta-rockchip \\
+            $ROOT/layers/meta-virtualization \\
             $ROOT/meta-lubancat \\
           "
           EOF
           {
             echo "MACHINE = \"$MACHINE\""
+            # 镜像里有什么由仓决定,不由 CI 决定 —— DISTRO_FEATURES 是配置级
+            # 变量,recipe 改不动,所以 meta-lubancat 自带一个 distro。
+            echo 'DISTRO = "lubancat"'
             echo 'INHERIT += "rm_work"'
             echo 'BB_NUMBER_THREADS = "4"'
             echo 'PARALLEL_MAKE = "-j 4"'
