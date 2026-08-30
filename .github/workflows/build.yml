@@ -152,6 +152,29 @@ jobs:
             | tee -a $GITHUB_STEP_SUMMARY || echo "(没找到 Sstate summary 行)"
           echo '```' | tee -a $GITHUB_STEP_SUMMARY
 
+      - name: 镜像内容自查
+        if: always()
+        run: |
+          # "构建通过"不等于"编出来的东西对"。第 7 轮就是全绿但产出是空壳。
+          # rootfs.manifest 是 bitbake 自己写的已装包清单,是唯一权威。
+          d=build/tmp/deploy/images/$MACHINE
+          m=$(ls -1 "$d"/*.rootfs.manifest 2>/dev/null | head -1) || true
+          if [ -z "${m:-}" ]; then
+            echo "::warning::没有 rootfs.manifest,构建没走到出片"
+            exit 0
+          fi
+          {
+            echo "## 镜像内容自查"
+            echo
+            echo "- 已装包总数:$(wc -l < "$m")"
+            echo
+            echo '```'
+            # 容器运行时这一串缺任何一个,podman 都跑不起来
+            grep -E '^(podman|crun|runc|conmon|netavark|aardvark-dns|slirp4netns|containers-common|catatonit) ' "$m" \
+              || echo "(没有任何容器相关包 —— podman 没进镜像)"
+            echo '```'
+          } | tee -a $GITHUB_STEP_SUMMARY
+
       # 无论编完没编完都要传 —— 半轮的 sstate 也是下一轮的起点,
       # 这正是分轮种 sstate 的全部意义。
       - name: 推 sstate 与 downloads 到 R2
