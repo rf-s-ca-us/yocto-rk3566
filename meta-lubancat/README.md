@@ -1,6 +1,6 @@
 # meta-lubancat
 
-RK3566 自制板 `rk3566-lubancat` 的 BSP layer。板级差异全在这里,其余一切
+野火 LubanCat1-BTB(核心板 + 官方 BTB 底板,公版)的 BSP layer。板级差异全在这里,其余一切
 继承自 `meta-rockchip` 与 poky。
 
 ## 依赖
@@ -38,8 +38,7 @@ bbappend 最后生效。
 ## 当前状态
 
 `KERNEL_DEVICETREE` 暂时指向 Rockchip 公版 EVB 的 dtb。这是故意的——先证明
-工具链、layer 结构、machine conf、镜像通路整条链是通的,再换成照原理图写的
-自有 dts,这样"仓建错了"和"引脚填错了"不会混在一起。
+工具链、layer 结构、machine conf、镜像通路整条链是通的,再换成本板自己的 dts,这样"仓建错了"和"引脚填错了"不会混在一起。
 
 ## 补丁与贡献
 
