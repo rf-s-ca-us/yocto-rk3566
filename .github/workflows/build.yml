@@ -197,7 +197,7 @@ jobs:
               # grep 放管道末尾才拿得到它的退出码 —— 后面再接 sort 的话
               # 管道状态就是 sort 的 0,"一个都没有"这条永远不会打印
               tar tzf "$t" | sort \
-                | grep -E '(etc/containers/|usr/share/containers/|bin/(podman|runc|crun|conmon|netavark|aardvark-dns|slirp4netns|catatonit)$)' \
+                | grep -E '(etc/containers/|usr/share/containers/|etc/systemd/system/|lib/systemd/system/podman|bin/(podman|runc|crun|conmon|netavark|aardvark-dns|slirp4netns|catatonit|systemd|systemd-timesyncd)$)' \
                 || echo "(一个都没有)"
               echo '```'
             } | tee -a $GITHUB_STEP_SUMMARY
