@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * 野火 LubanCat-1IO —— LubanCat1-BTB 核心板 + 野火官方 BTB 底板
+ *
+ * 以 Rockchip 公版 EVB2 为底,只覆盖实测到的板级差异。
+ * 差异值来自板子上运行中的官方系统设备树(/sys/firmware/fdt 导出后反编译),
+ * 不是照原理图猜,也不是抄主线 rk3566-lubancat-1.dts —— 那份是一体板
+ * LubanCat 1 的,四项关键值与本板全不同。
+ */
+
+/dts-v1/;
+
+#include "rk3566-evb2-lp4x-v10.dtsi"
+#include "rk3568-linux.dtsi"
+#include <dt-bindings/display/rockchip_vop.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/rockchip.h>
+
+/ {
+	model = "EmbedFire LubanCat-1IO";
+	compatible = "embedfire,lubancat-1io", "rockchip,rk3566";
+};
+
+&vp0 {
+	cursor-win-id = <ROCKCHIP_VOP2_CLUSTER0>;
+};
+
+/*
+ * 千兆网口。EVB2 与本板同为 gmac1 + rgmii + gmac1m1 引脚组,但四项不同:
+ *
+ *                  EVB2              本板(实测)
+ *   复位 GPIO      gpio3 RK_PC2      gpio0 RK_PA6
+ *   复位时序 us    0/20000/100000    0/100000/100000
+ *   tx_delay       0x4f              0x16
+ *   rx_delay       0x25              0x06
+ *   引脚组         无 level 后缀     level3 / level2 变体
+ *
+ * 复位引脚错则 PHY 根本不上电,延时错则协商上了也丢包 —— 所以这不是调优,
+ * 是能不能联网的前提。
+ *
+ * PHY 节点不覆盖:EVB2 的 &mdio1/phy@0 是地址 0 + ethernet-phy-ieee802.3-c22,
+ * 与本板一致。本板实际芯片是 JL2xxx,官方 dts 里带 jl2xxx,led-* 两条厂商属性,
+ * 但本内核 drivers/net/phy 下查无 jl2xxx 驱动,搬过来也没人读,故不搬。
+ * 通用 c22 驱动足以协商与收发,厂商特性(LED 行为等)没有。**待实机验证**
+ *
+ * local-mac-address 故意不写:那是这块板独有的设备身份,公开仓不放,
+ * 换板子也会错。留给 u-boot / 内核自行分配。
+ */
+&gmac1 {
+	snps,reset-gpio = <&gpio0 RK_PA6 GPIO_ACTIVE_LOW>;
+	snps,reset-delays-us = <0 100000 100000>;
+
+	pinctrl-0 = <&gmac1m1_miim
+		     &gmac1m1_tx_bus2_level3
+		     &gmac1m1_rx_bus2
+		     &gmac1m1_rgmii_clk_level2
+		     &gmac1m1_rgmii_bus_level3>;
+
+	tx_delay = <0x16>;
+	rx_delay = <0x06>;
+};
