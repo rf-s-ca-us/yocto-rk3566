@@ -1,0 +1,3 @@
+[submodule "docs"]
+	path = docs
+	url = git@github.com:rf-s-ca-us/yocto-rk3566-docs.git

@@ -8,5 +8,6 @@
 !/meta-lubancat/
 !/ci/
 !/.github/
+!/docs/
 
 # setup.sh 拉下来的第三方 layer 与 bitbake 产物都落在被忽略的路径下
