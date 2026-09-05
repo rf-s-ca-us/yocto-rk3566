@@ -58,7 +58,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            chrpath cpio diffstat gawk lz4 zstd file \
+            chrpath cpio diffstat gawk lz4 zstd file device-tree-compiler \
             build-essential texinfo unzip wget git python3 python3-venv
 
       - name: 放开非特权 user namespace
@@ -167,7 +167,7 @@ jobs:
           # 变量 ${VIRTUAL-RUNTIME_container_runtime},实际包名带后缀
           # (runc-opencontainers 之类)。上一轮写成 '^runc ' 就漏掉了,
           # 于是"缺 runtime"是模式的错,不是镜像的错。
-          pat='^(podman|conmon|catatonit|crun|runc|netavark|aardvark|slirp4netns|fuse-overlayfs|skopeo|iptables|containers|nsenter)'
+          pat='^(podman|conmon|catatonit|crun|runc|netavark|aardvark|slirp4netns|fuse-overlayfs|skopeo|iptables|containers|nsenter|kernel-module-8821cu|wpa-supplicant|lubancat-netcfg)'
           {
             echo "## 镜像内容自查"
             echo
@@ -204,6 +204,46 @@ jobs:
           else
             echo "::warning::没有 rootfs.tar.gz,跳过文件级检查"
           fi
+
+      - name: dtb 自查
+        if: always()
+        run: |
+          # 这一轮改的是 dts,而"能编过"不等于"编出来的内容对" —— 网口那个 bug
+          # 恰恰是编得好好的、跑起来才没有接口。所以断言直接问最终产物 dtb,
+          # 不问源码:源码写没写对不是这里要回答的问题。
+          d=build/tmp/deploy/images/$MACHINE
+          b=$(ls -1 "$d"/rk3566-lubancat-1io.dtb 2>/dev/null | head -1) || true
+          if [ -z "${b:-}" ]; then
+            echo "::warning::没有 rk3566-lubancat-1io.dtb,跳过 dtb 自查"
+            exit 0
+          fi
+          dtc -I dtb -O dts -o /tmp/board.dts "$b" 2>/dev/null
+
+          # dtc 输出里根节点下的节点缩进一个 tab,按此切出单个节点的块
+          node() {
+            awk -v n="$1" '$0 ~ "^\t"n" \\{" {f=1} f {print} f && /^\t};/ {exit}' /tmp/board.dts
+          }
+
+          fail=0
+          # GPIO0_A6 在本板是 GMAC1_RSTn。这个稳压器只要还留着 gpio,
+          # 它就会把引脚以 gpio + pinmux 两种身份占死,gmac1 拿 -EBUSY,没有网口。
+          if node vcc5v0-host-regulator | grep -qE '^\s+(gpio|pinctrl-0) = '; then
+            echo "::error::vcc5v0-host-regulator 还占着 gpio/pinctrl —— 网口会重新消失"
+            fail=1
+          fi
+          # 0x1d = 29 = GPIO0_D5,0x1 = GPIO_ACTIVE_LOW。少一样无线就不上电。
+          if ! node vcc3v3-wlan-regulator | grep -q '0x1d 0x01'; then
+            echo "::error::vcc3v3-wlan-regulator 的 gpio 不是 <gpio0 29 ACTIVE_LOW>"
+            fail=1
+          fi
+          {
+            echo "### dtb 自查"
+            echo '```'
+            node vcc5v0-host-regulator
+            node vcc3v3-wlan-regulator
+            echo '```'
+          } | tee -a $GITHUB_STEP_SUMMARY
+          exit $fail
 
       # 无论编完没编完都要传 —— 半轮的 sstate 也是下一轮的起点,
       # 这正是分轮种 sstate 的全部意义。

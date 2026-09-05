@@ -21,5 +21,9 @@ IMAGE_INSTALL:append = " kernel-modules"
 IMAGE_INSTALL:append = " podman"
 
 # 接的网段没有 DHCP,poky 默认只给一份 80-wired.network(DHCP=yes),
-# 结果是接口起来了但没地址。静态配置见 lubancat-netcfg。
+# 起来了也拿不到地址。静态配置见 lubancat-netcfg。
 IMAGE_INSTALL:append = " lubancat-netcfg"
+
+# 板载 TL8821CUB 的驱动不在树内,见 rtl8821cu recipe。装 wpa-supplicant 才谈得上
+# 连 AP —— 有了驱动没有它,只是多一个 wlan0 躺在那里。
+IMAGE_INSTALL:append = " kernel-module-8821cu wpa-supplicant"

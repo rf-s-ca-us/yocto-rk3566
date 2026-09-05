@@ -1,6 +1,9 @@
 # 板子接的网段没有 DHCP,靠 poky 默认的 80-wired.network(DHCP=yes)拿不到地址。
 # systemd-networkd 按文件名字典序匹配、首个命中即生效,所以这份必须排在 80 之前。
 #
+# 按 Type 匹配而不是按名字:这块板的网口叫 end1(设备树里有 alias,systemd 就用
+# 这种命名),不叫 eth0,写死名字会静默失配。
+#
 # 排除 veth/podman/cni:容器网络的接口也是 Type=ether,被这份匹配上会把
 # 容器的地址覆盖掉。
 
