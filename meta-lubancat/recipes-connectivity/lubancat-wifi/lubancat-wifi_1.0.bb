@@ -39,16 +39,19 @@ do_install() {
 	# 0600:口令明文躺在 rootfs 里,这是 wpa_supplicant 的既定形态,能做的是
 	# 别让它世界可读。服务里 ConditionPathExists 盯的就是这个文件。
 	install -d -m 0700 ${D}${sysconfdir}/wpa_supplicant
-	cat > ${D}${sysconfdir}/wpa_supplicant/wpa_supplicant-wlan.conf <<EOF
-ctrl_interface=/run/wpa_supplicant
-update_config=1
-
-network={
-	ssid="${WIFI_SSID}"
-	psk="${WIFI_PSK}"
-	key_mgmt=WPA-PSK
-}
-EOF
+	# 不用 heredoc:bitbake 的 shell 函数以第 0 列的 `}` 收尾,而 wpa_supplicant
+	# 的 network={...} 块正好要一个 `}`。写成 heredoc 会让函数在那里被截断,
+	# 报的还是下一行 EOF "unparsed line",跟真正的原因隔着一行。
+	{
+		echo 'ctrl_interface=/run/wpa_supplicant'
+		echo 'update_config=1'
+		echo ''
+		echo 'network={'
+		echo '    ssid="${WIFI_SSID}"'
+		echo '    psk="${WIFI_PSK}"'
+		echo '    key_mgmt=WPA-PSK'
+		echo '}'
+	} > ${D}${sysconfdir}/wpa_supplicant/wpa_supplicant-wlan.conf
 	chmod 0600 ${D}${sysconfdir}/wpa_supplicant/wpa_supplicant-wlan.conf
 }
 

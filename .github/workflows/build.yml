@@ -221,7 +221,13 @@ jobs:
           d=build/tmp/deploy/images/$MACHINE
           b=$(ls -1 "$d"/rk3566-lubancat-1io.dtb 2>/dev/null | head -1) || true
           if [ -z "${b:-}" ]; then
-            echo "::warning::没有 rk3566-lubancat-1io.dtb,跳过 dtb 自查"
+            # 构建成功却没有 dtb,说明自查什么都没检查 —— 那不是"跳过",是绿得
+            # 没有依据。这个仓栽过的每一次都是这个形态,所以当失败处理。
+            if [ "${{ steps.bitbake.outputs.code }}" = "0" ]; then
+              echo "::error::构建成功却找不到 rk3566-lubancat-1io.dtb,自查无从做起"
+              exit 1
+            fi
+            echo "::warning::构建未走到出片,跳过 dtb 自查"
             exit 0
           fi
           dtc -I dtb -O dts -o /tmp/board.dts "$b" 2>/dev/null
