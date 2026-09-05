@@ -27,6 +27,14 @@ do_install() {
 		${D}${nonarch_base_libdir}/modules/${KERNEL_VERSION}/kernel/drivers/net/wireless/
 }
 
+# 没有这一行,镜像里装不到它。kernel.bbclass 声明了
+# PACKAGES_DYNAMIC += "^kernel-module-.*",于是 IMAGE_INSTALL 里的
+# kernel-module-8821cu 被解析到内核 recipe 头上 —— 这个 recipe 连构建图都进不去,
+# 一路编到 do_rootfs 才由 dnf 报 "No match for argument"。
+# RPROVIDES 是解析期的静态变量,优先于动态包名的正则匹配。
+# poky 自带的树外模块范例 meta-skeleton/recipes-kernel/hello-mod 就是这么写的。
+RPROVIDES:${PN} += "kernel-module-8821cu"
+
 # modalias 自动加载要 udev 参与;这块板上无线是基础设施不是可选外设,
 # 直接写死开机加载,少一层不确定。
 KERNEL_MODULE_AUTOLOAD += "8821cu"
