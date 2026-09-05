@@ -59,3 +59,63 @@
 	tx_delay = <0x16>;
 	rx_delay = <0x06>;
 };
+
+/*
+ * EVB2 把 GPIO0_A6 当 USB 5V host 使能,以 gpio 和 pinmux(vcc5v0_host_en)
+ * 两种身份占住它,又是 regulator-always-on,开机就占死不放。而本板这根脚是
+ * GMAC1_RSTn —— EBF410160_SCH 与 EBF410159_SCH 两份原理图都标同一个网名。
+ * 于是 gmac1 申请复位脚只能拿到 -EBUSY,MDIO 注册失败,网口连出现都不出现:
+ *
+ *   rk_gmac-dwmac fe010000.ethernet: error -EBUSY: Cannot register the MDIO bus
+ *   rk_gmac-dwmac fe010000.ethernet: probe failed with error -16
+ *
+ * 实机验证过:运行时把这个稳压器 unbind 腾出引脚,再 bind rk_gmac-dwmac,
+ * end1 立刻 "Link is Up - 100Mbps/Full",PHY 也经 MDIO 认到了。
+ *
+ * 只删 gpio 与 pinmux、不删节点:USB 那边有消费者引用它,节点得留着,退化成
+ * 常开固定电源即可。这根脚在本板不控任何 USB 电源 —— 它被占着的时候 USB
+ * 集线器和无线模块照样枚举,可见 USB 供电与它无关。
+ */
+&vcc5v0_host {
+	/delete-property/ gpio;
+	/delete-property/ enable-active-high;
+	/delete-property/ pinctrl-names;
+	/delete-property/ pinctrl-0;
+};
+
+/*
+ * EVB2 那份 wireless-wlan 描述的是 AP6398S(Broadcom,走 SDIO),本板是
+ * TL8821CUB(Realtek RTL8821CU,走 USB,枚举出来是 0bda:c820)。两项都不对:
+ *
+ *                      EVB2                          本板(实测)
+ *   wifi_chip_type     ap6398s                       TL8821CUB
+ *   WIFI,poweren_gpio  <&gpio0 9 0> 即 GPIO0_B1      GPIO0_D5
+ *
+ * 这个节点走的是 wlan-platdata → bcmdhd 的上电时序,对一个 USB 部件没有意义,
+ * 所以关掉它,电源单独用一个常开固定稳压器给。
+ */
+&wireless_wlan {
+	status = "disabled";
+};
+
+/ {
+	/*
+	 * 3V3_WLAN 由 Q7(AO3407,P-MOS)开关:源极 VDD_3V3、漏极 3V3_WLAN,栅极
+	 * 经 R127 10K 上拉到 VDD_3V3、经 R128 510R 接 GPIO0_D5。栅极默认被拉高
+	 * 即断电,拉低才导通 —— 所以是低有效,不是 Rockchip 常见的高有效。
+	 * (EBF410160_SCH 第 12 页 "WLAN Power")
+	 *
+	 * 实机验证过:sysfs 把 gpio29 拉低,模块立刻在 EHCI 上枚举:
+	 *   usb 5-1: New USB device found, idVendor=0bda, idProduct=c820
+	 *   Bluetooth: hci0: RTL: examining ... lmp_subver=8821
+	 */
+	vcc3v3_wlan: vcc3v3-wlan-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc3v3_wlan";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+		gpio = <&gpio0 RK_PD5 GPIO_ACTIVE_LOW>;
+	};
+};
