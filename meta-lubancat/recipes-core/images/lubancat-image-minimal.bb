@@ -19,3 +19,7 @@ IMAGE_INSTALL:append = " kernel-modules"
 # 全塞进 rootfs 等于把镜像和它的版本焊死。podman 无守护进程,不像 docker
 # 那样常驻一个 root daemon,在单板上更划算。
 IMAGE_INSTALL:append = " podman"
+
+# 接的网段没有 DHCP,poky 默认只给一份 80-wired.network(DHCP=yes),
+# 结果是接口起来了但没地址。静态配置见 lubancat-netcfg。
+IMAGE_INSTALL:append = " lubancat-netcfg"
