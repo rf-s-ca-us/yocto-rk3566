@@ -1,0 +1,11 @@
+# 无线走 DHCP:路由器会连网关和 DNS 一起给,板子的默认路由就来自这里。
+# 有线那份(10-eth-static)只配地址不配网关,两者不打架 —— 一个 Type=wlan
+# 一个 Type=ether,各自匹配各自的。
+[Match]
+Type=wlan
+
+[Network]
+DHCP=yes
+
+[DHCPv4]
+RouteMetric=100

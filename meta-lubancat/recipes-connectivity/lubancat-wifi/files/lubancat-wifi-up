@@ -1,0 +1,24 @@
+#!/bin/sh
+# 无线接口叫什么由 systemd 的命名策略说了算 —— 这块板的有线口就叫 end1 不叫
+# eth0,赌 "wlan0" 是在重复同一个错误。所以开机时问内核:只有无线接口的
+# /sys/class/net/<if>/ 下面才有 wireless/ 目录。
+#
+# 等而不是立刻放弃:8821cu 是 USB 设备,模块加载和枚举都排在 systemd 后面,
+# 服务起来时接口多半还没出现。
+set -eu
+
+CONF=/etc/wpa_supplicant/wpa_supplicant-wlan.conf
+
+i=0
+while [ $i -lt 30 ]; do
+	for d in /sys/class/net/*/wireless; do
+		[ -e "$d" ] || continue
+		ifc=$(basename "$(dirname "$d")")
+		exec /usr/sbin/wpa_supplicant -c "$CONF" -i "$ifc"
+	done
+	i=$((i + 1))
+	sleep 1
+done
+
+echo "30 秒内没有出现无线接口 —— 看 lsmod 有没有 8821cu,以及模块有没有上电" >&2
+exit 1

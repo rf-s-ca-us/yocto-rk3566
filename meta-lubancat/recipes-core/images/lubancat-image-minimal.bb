@@ -27,3 +27,7 @@ IMAGE_INSTALL:append = " lubancat-netcfg"
 # 板载 TL8821CUB 的驱动不在树内,见 rtl8821cu recipe。装 wpa-supplicant 才谈得上
 # 连 AP —— 有了驱动没有它,只是多一个 wlan0 躺在那里。
 IMAGE_INSTALL:append = " kernel-module-8821cu wpa-supplicant"
+
+# 地址通了还得进得去:镜像里只有 sshd 没有任何凭据,root 密码为空而 sshd 不收
+# 空密码。塞开发机的公钥,重烧一次仍然进得去。
+IMAGE_INSTALL:append = " lubancat-ssh-authkeys lubancat-wifi"

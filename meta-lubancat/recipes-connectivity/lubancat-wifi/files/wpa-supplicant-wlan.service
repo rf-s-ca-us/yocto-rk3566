@@ -1,0 +1,15 @@
+[Unit]
+Description=wpa_supplicant(接口自动识别)
+Wants=network.target
+Before=network.target
+After=systemd-modules-load.service
+ConditionPathExists=/etc/wpa_supplicant/wpa_supplicant-wlan.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/lubancat-wifi-up
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
