@@ -84,3 +84,37 @@ Actions → build → Run workflow。第一轮必然是冷编,大概率 260 分�
 - `sstate-cache` / `downloads` / `tmp` 各占多少
 
 拿到这两个数才谈得上判断这条路划不划算。
+
+## 反向也成立:用 CI 的 sstate 在本机编(已实测)
+
+上面那条"本机种的 sstate 到 runner 上会大面积 miss"讲的是**本机 → runner**。
+反过来 **runner → 本机**是通的,2026-09-06 实测:整镜像 5050 个任务里 5006 个
+不用重跑,冷启动到出片约 20 分钟。
+
+前提只有一条:**uninative 必须拿得到**。它在则 sstate 不绑定构建机发行版,
+CI 那份就能直接用;拿不到而按 `known-issues/yocto-fetch-egress-blocked.md`
+关掉它,native 部分的 hash 就跟 CI 对不上,退化成几小时冷编——那条 SOP 是
+救火用的,不是常态配置,别顺手写进 local.conf 长期留着。
+
+配置逐项照抄 workflow 的「生成构建配置」那一步,少一项就可能整片 miss:
+
+```sh
+MACHINE = "rk3566-lubancat"
+DISTRO  = "lubancat"
+BB_HASHSERVE = ""                       # 与 CI 一致,否则 unihash 对不上
+BB_SIGNATURE_HANDLER = "OEBasicHash"
+SSTATE_MIRRORS ?= "file://.* <SSTATE_BASE_URL>/sstate/PATH;downloadfilename=PATH"
+SOURCE_MIRROR_URL ?= "<SSTATE_BASE_URL>/downloads/"
+INHERIT += "own-mirrors"
+```
+
+`SSTATE_BASE_URL` 在仓的 Actions variables 里(`gh api repos/<owner>/<repo>/actions/variables`)。
+本地**不要**加 `INHERIT += "rm_work"`:出了问题要进 workdir 看编译产物,
+而 rm_work 只多一个任务、不改别人的 hash,去掉它不影响命中。
+
+宿主还需要 `chrpath cpio diffstat gawk lz4 zstd file texinfo`,以及
+`en_US.UTF-8` locale。`oe-init-build-env` 引用了未定义的 `BBSERVER`,
+包它的脚本别写 `set -u`。
+
+**这条路的价值**:CI 一轮 20–40 分钟,本地改一行重编只要几分钟。树外内核模块
+那种"要编到最后才知道对不对"的东西,不在本地过一遍就是拿 CI 当编译器。
