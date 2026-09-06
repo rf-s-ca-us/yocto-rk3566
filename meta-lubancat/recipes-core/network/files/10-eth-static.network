@@ -1,5 +1,14 @@
-# 板子接的网段没有 DHCP,靠 poky 默认的 80-wired.network(DHCP=yes)拿不到地址。
-# systemd-networkd 按文件名字典序匹配、首个命中即生效,所以这份必须排在 80 之前。
+# 静态地址 + DHCP 同时挂在以太口上,两者不冲突,systemd-networkd 会都配上。
+#
+# 静态那份是重烧后的救援通道:Wi-Fi 凭据按约定不进公开仓的镜像,所以每次重烧
+# 完板子的无线是断的,此时进板要么串口,要么拿根网线直连 PC 打 192.168.9.1。
+# 正因为这个网段在真实路由器上不存在,它才不会跟任何现网撞车。
+#
+# DHCP 那份是接路由器时用的。RouteMetric 比 25-wlan.network 的 100 小,
+# 所以两边都在线时默认路由走有线。
+#
+# systemd-networkd 按文件名字典序匹配、首个命中即生效,所以这份必须排在 poky
+# 默认的 80-wired.network 之前。
 #
 # 按 Type 匹配而不是按名字:这块板的网口叫 end1(设备树里有 alias,systemd 就用
 # 这种命名),不叫 eth0,写死名字会静默失配。
@@ -15,3 +24,7 @@ KernelCommandLine=!ip
 
 [Network]
 Address=192.168.9.1/24
+DHCP=yes
+
+[DHCPv4]
+RouteMetric=50

@@ -20,8 +20,8 @@ IMAGE_INSTALL:append = " kernel-modules"
 # 那样常驻一个 root daemon,在单板上更划算。
 IMAGE_INSTALL:append = " podman"
 
-# 接的网段没有 DHCP,poky 默认只给一份 80-wired.network(DHCP=yes),
-# 起来了也拿不到地址。静态配置见 lubancat-netcfg。
+# poky 默认只给一份 80-wired.network,而板子既要能直连 PC(静态)又要能接
+# 路由器(DHCP),还要一个能通的 NTP —— 板子没有电池 RTC。见 lubancat-netcfg。
 IMAGE_INSTALL:append = " lubancat-netcfg"
 
 # 板载 TL8821CUB 的驱动不在树内,见 rtl8821cu recipe。装 wpa-supplicant 才谈得上
