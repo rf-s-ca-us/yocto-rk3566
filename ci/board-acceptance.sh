@@ -40,11 +40,18 @@ check "NTP 已同步"          'timedatectl | grep -q "System clock synchronized
 
 check "overlay 存储驱动"    'podman info --format "{{.Store.GraphDriverName}}" | grep -qx overlay'
 
-# 真跑一个容器 —— 这一步才是整个脚本存在的理由。前面全过、这里挂过的
-# 情况已经发生过一次(缺 BRIDGE / POSIX_MQUEUE)。
-check "拉镜像"              'podman pull -q docker.io/library/busybox:latest'
-check "跑容器(默认网络)"   'podman run --rm docker.io/library/busybox:latest true'
-check "容器出网"            'podman run --rm docker.io/library/busybox:latest ping -c2 -W3 223.5.5.5'
+# 用 quay.io 不用 docker.io:实测 registry-1.docker.io 从本网络连不上
+# (i/o timeout,且 DNS 把它解析到一个 facebook 的地址),而 quay.io 与
+# ghcr.io 的 /v2/ 都正常返回 401 —— 那是未认证探测的健康响应,不是故障。
+# 这里要验的是"容器能不能跑",不该被镜像源可达性拖下水。
+IMG=quay.io/libpod/busybox:latest
+
+# 真跑一个容器 —— 这一步才是整个脚本存在的理由。前面全过、这里挂过的情况
+# 已经发生过两次:先是缺 BRIDGE / POSIX_MQUEUE,再是缺 iptables 的
+# xt_comment(见 docs/known-issues/check-config-misses-iptables-extensions.md)。
+check "拉镜像"              "podman pull -q $IMG"
+check "跑容器(默认网络)"   "podman run --rm $IMG true"
+check "容器出网"            "podman run --rm $IMG ping -c2 -W3 223.5.5.5"
 
 echo
 echo "通过 $pass,失败 $fail"
