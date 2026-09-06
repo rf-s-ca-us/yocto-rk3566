@@ -5,14 +5,14 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 SRC_URI += "file://rk3566-lubancat-1io.dts"
 
-# vendor 的 6.1 defconfig 里 `# CONFIG_OVERLAY_FS is not set`,于是 podman 起不了
-# 任何容器:`kernel does not support overlay fs: 'overlay' is not supported over
-# extfs`。装了 podman 却没有它,等于装了个跑不动的东西。
+# 容器要的内核项。vendor 的 6.1 defconfig 一个都没开,于是 podman 装进了镜像
+# 却跑不了任何容器 —— 而 CI 只验「包在不在」,验不出这个,它就一直没被发现。
+# 具体清单和为什么必须一次补全见 container.cfg 里的注释。
 #
 # 这是 distro 层的诉求不是板级的 —— 跟 lubancat.conf 里那个 virtualization
 # 同因(这个产品要跑容器),换块板子照样要。暂放这里是因为三层现在挤在同一个
 # layer 里;等 BSP / distro 分开,它跟 virtualization 一起走。
-SRC_URI += "file://overlayfs.cfg"
+SRC_URI += "file://container.cfg"
 
 # 放在 do_configure 之前:此时 ${S} 已经解包好,而内核尚未开始配置/编译。
 do_configure:prepend() {
