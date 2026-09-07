@@ -35,10 +35,16 @@ IMAGE_INSTALL:append = " lubancat-ssh-authkeys lubancat-wifi"
 # ROS 2 Jazzy。meta-ros 的 scarthgap 分支上只有 Jazzy 是 full 支持(到 2028-04),
 # 同分支里的 Humble / Kilted / Lyrical 各自是独立 layer,只登记 Jazzy 那一层。
 #
-# 档位收在一个变量里:desktop = ros-base + rviz2 + rqt + demo 节点,是最贵的一档
-# (连带 Qt5、OGRE、PCL 全要从源码编)。要缩范围就改这一行,别去拆下面的清单 ——
-# ros-base 去掉可视化,ros-core 只剩发布/订阅与消息生成。
-LUBANCAT_ROS_VARIANT ?= "desktop"
+# 档位收在一个变量里,改这一行就换档,别去拆下面的清单:
+#   ros-core   发布/订阅、消息生成、ament/colcon 这套底座
+#   ros-base   加 tf2 / urdf / robot-state-publisher 这类常用件
+#   desktop    再加 rviz2 / rqt / demo 节点,连带 Qt5、OGRE、PCL 全从源码编
+#
+# **目标档位是 desktop**;先落 ros-core 是故障域隔离,不是缩范围。这一刀同时
+# 动了四件事(登记两个第三方仓的四个 layer、全局 ROS_DISTRO、档位、板上工具链),
+# 四件一起上、CI 一红就分不清是哪件 —— 跟"换自写 dts 前先用 EVB dtb 跑通"同一条
+# 规矩。第一轮绿了就把这里改成 desktop,BBLAYERS 一行都不用动。
+LUBANCAT_ROS_VARIANT ?= "ros-core"
 IMAGE_INSTALL:append = " ${LUBANCAT_ROS_VARIANT}"
 
 # 板上开发环境 —— 判据是"能在板子上直接 colcon build 一个 ament 包",不是
