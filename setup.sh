@@ -32,6 +32,13 @@ fetch https://github.com/JeffyCN/meta-rockchip.git          meta-rockchip       
 # 官方仓在 git.yoctoproject.org,GitHub 上没有官方镜像(yoctoproject/
 # meta-virtualization 是 404,能搜到的 GitHub 副本都是第三方 fork)。
 fetch https://git.yoctoproject.org/meta-virtualization      meta-virtualization f980aefbc8b3eeafb8d144e7fdac3c3b701a4fea
+# meta-ros 一个 git 仓里装着三个 layer(meta-ros-common / meta-ros2 /
+# meta-ros2-jazzy),三个都要进 BBLAYERS。scarthgap 分支上 Jazzy 是 full 支持
+# (到 2028-04),Humble / Kilted / Lyrical 也在同一个分支里,只登记 Jazzy 那层。
+fetch https://github.com/ros/meta-ros.git                   meta-ros            336ec2aaeede7f6f2d7d305cde0426f8dbc14984
+# rviz2 的 DEPENDS 里有 qtbase,而 Qt5 既不在 poky 也不在 meta-openembedded ——
+# 只有这个 layer 提供。装 desktop 档才需要它;降到 ros-base / ros-core 可以拿掉。
+fetch https://github.com/meta-qt5/meta-qt5.git              meta-qt5            227cf5e7b64c93dfc1a45f235c466db8c3fd8707
 
 echo
 echo "layer 就位。下一步:"

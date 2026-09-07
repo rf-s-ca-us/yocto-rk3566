@@ -93,6 +93,10 @@ jobs:
             $ROOT/layers/meta-openembedded/meta-filesystems \\
             $ROOT/layers/meta-rockchip \\
             $ROOT/layers/meta-virtualization \\
+            $ROOT/layers/meta-qt5 \\
+            $ROOT/layers/meta-ros/meta-ros-common \\
+            $ROOT/layers/meta-ros/meta-ros2 \\
+            $ROOT/layers/meta-ros/meta-ros2-jazzy \\
             $ROOT/meta-lubancat \\
           "
           EOF
@@ -211,6 +215,52 @@ jobs:
           else
             echo "::warning::没有 rootfs.tar.gz,跳过文件级检查"
           fi
+
+      - name: ROS 与板上工具链自查
+        if: always()
+        run: |
+          # 镜像里 ROS 包有几百个,全打出来会把要看的几行淹掉 —— 所以只断言几个
+          # 代表,再给总数。断言问的是 manifest(bitbake 自己写的已装包清单),
+          # 不是构建退出码:这个仓栽过的每一次都是"全绿但产出是空壳"。
+          d=build/tmp/deploy/images/$MACHINE
+          m=$(ls -1 "$d"/*.rootfs.manifest 2>/dev/null | head -1) || true
+          if [ -z "${m:-}" ]; then
+            echo "::warning::没有 rootfs.manifest,构建没走到出片"
+            exit 0
+          fi
+
+          # 期望的档位直接从 recipe 里读,不在这儿另抄一份 —— 抄一份就会漂。
+          img=meta-lubancat/recipes-core/images/lubancat-image-minimal.bb
+          variant=$(sed -n 's/^LUBANCAT_ROS_VARIANT ?= "\(.*\)"/\1/p' "$img")
+
+          fail=0
+          # ros-core 是每一档共同的底座(desktop → ros-base → ros-core);
+          # 其余几项决定"能不能在板上编" —— 少任何一个,这镜像就只是能跑不能开发,
+          # 而板上开发环境正是本轮要的东西。
+          for pkg in "$variant" ros-core gcc python3-colcon-core python3-vcstool cmake git; do
+            grep -qE "^$pkg " "$m" || { echo "::error::manifest 里没有 $pkg"; fail=1; }
+          done
+
+          # dev-pkgs 是 IMAGE_FEATURES,漏了不报错、照样出片,跑到板上 include
+          # 不到头文件才发现。一个 -dev 包都没有就是它没生效。
+          grep -qE -- '-dev ' "$m" \
+            || { echo "::error::manifest 里一个 -dev 包都没有 —— dev-pkgs 没生效"; fail=1; }
+          # 上一条只证明 dev-pkgs 生效,不证明 ROS 的头文件跟着进来了。rclcpp-dev
+          # 是 rclcpp recipe 真实产出的包(`bitbake -e rclcpp` 的 PACKAGES 里有),
+          # 不是猜的包名 —— 它不在,板上就编不了任何 ament_cmake 包。
+          grep -qE '^rclcpp-dev ' "$m" \
+            || { echo "::error::manifest 里没有 rclcpp-dev —— 板上编 ament 包会缺 rclcpp 头文件"; fail=1; }
+
+          {
+            echo "## ROS 与板上工具链自查"
+            echo
+            echo "- 档位:\`$variant\`  ROS 相关包:$(grep -cE '^(ros-|rmw-|rcl|rviz|rqt|ament-|rosidl)' "$m")  -dev 包:$(grep -cE -- '-dev ' "$m")"
+            echo
+            echo '```'
+            grep -E "^($variant|ros-core|ros-base|rviz2|rclcpp|rclcpp-dev|python3-colcon-core|python3-vcstool|cmake|git|gcc|g\+\+|binutils|make) " "$m" || echo "(一个都没有)"
+            echo '```'
+          } | tee -a $GITHUB_STEP_SUMMARY
+          exit $fail
 
       - name: dtb 自查
         if: always()
