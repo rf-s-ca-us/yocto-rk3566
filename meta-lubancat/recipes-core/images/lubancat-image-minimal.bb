@@ -37,14 +37,14 @@ IMAGE_INSTALL:append = " lubancat-ssh-authkeys lubancat-wifi"
 #
 # 档位收在一个变量里,改这一行就换档,别去拆下面的清单:
 #   ros-core   发布/订阅、消息生成、ament/colcon 这套底座
-#   ros-base   加 tf2 / urdf / robot-state-publisher 这类常用件
-#   desktop    再加 rviz2 / rqt / demo 节点,连带 Qt5、OGRE、PCL 全从源码编
+#   ros-base   加 tf2 / urdf / robot-state-publisher 这类真做机器人躲不开的件
+#   desktop    再加 rviz2 / rqt / demo 节点
 #
-# **目标档位是 desktop**;先落 ros-core 是故障域隔离,不是缩范围。这一刀同时
-# 动了四件事(登记两个第三方仓的四个 layer、全局 ROS_DISTRO、档位、板上工具链),
-# 四件一起上、CI 一红就分不清是哪件 —— 跟"换自写 dts 前先用 EVB dtb 跑通"同一条
-# 规矩。第一轮绿了就把这里改成 desktop,BBLAYERS 一行都不用动。
-LUBANCAT_ROS_VARIANT ?= "ros-core"
+# **不取 desktop**:rviz2 要 libx11/libxaw/libxrandr 加一个 X server,而这块板
+# 没有显示栈;就算补上,桌面 GL 也只有软件渲染(GALLIUMDRIVERS = "swrast",
+# libmali 只给 GLES 不给桌面 GL)。ROS 2 的中间件是 DDS,rviz2 跑开发机订阅板上
+# 的 topic 才是它的用法。完整论证见 docs/ros-dev-image/design.html。
+LUBANCAT_ROS_VARIANT ?= "ros-base"
 IMAGE_INSTALL:append = " ${LUBANCAT_ROS_VARIANT}"
 
 # 板上开发环境 —— 判据是"能在板子上直接 colcon build 一个 ament 包",不是

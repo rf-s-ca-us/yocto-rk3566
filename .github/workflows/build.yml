@@ -93,7 +93,6 @@ jobs:
             $ROOT/layers/meta-openembedded/meta-filesystems \\
             $ROOT/layers/meta-rockchip \\
             $ROOT/layers/meta-virtualization \\
-            $ROOT/layers/meta-qt5 \\
             $ROOT/layers/meta-ros/meta-ros-common \\
             $ROOT/layers/meta-ros/meta-ros2 \\
             $ROOT/layers/meta-ros/meta-ros2-jazzy \\
@@ -257,7 +256,7 @@ jobs:
             echo "- 档位:\`$variant\`  ROS 相关包:$(grep -cE '^(ros-|rmw-|rcl|rviz|rqt|ament-|rosidl)' "$m")  -dev 包:$(grep -cE -- '-dev ' "$m")"
             echo
             echo '```'
-            grep -E "^($variant|ros-core|ros-base|rviz2|rclcpp|rclcpp-dev|python3-colcon-core|python3-vcstool|cmake|git|gcc|g\+\+|binutils|make) " "$m" || echo "(一个都没有)"
+            grep -E "^($variant|ros-core|ros-base|rclcpp|rclcpp-dev|python3-colcon-core|python3-vcstool|cmake|git|gcc|g\+\+|binutils|make) " "$m" || echo "(一个都没有)"
             echo '```'
           } | tee -a $GITHUB_STEP_SUMMARY
           exit $fail

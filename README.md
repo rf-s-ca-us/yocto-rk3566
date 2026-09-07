@@ -16,7 +16,7 @@
 ## 快速开始
 
 ```sh
-./setup.sh                                  # 拉 poky / meta-openembedded / meta-rockchip / meta-virtualization / meta-ros / meta-qt5
+./setup.sh                                  # 拉 poky / meta-openembedded / meta-rockchip / meta-virtualization / meta-ros
 ROOT=$PWD                                   # oe-init-build-env 会切目录,先存下来
 . layers/poky/oe-init-build-env build
 ```
@@ -33,7 +33,6 @@ BBLAYERS ?= " \
   $ROOT/layers/meta-openembedded/meta-filesystems \
   $ROOT/layers/meta-rockchip \
   $ROOT/layers/meta-virtualization \
-  $ROOT/layers/meta-qt5 \
   $ROOT/layers/meta-ros/meta-ros-common \
   $ROOT/layers/meta-ros/meta-ros2 \
   $ROOT/layers/meta-ros/meta-ros2-jazzy \
@@ -61,9 +60,10 @@ INHERIT += "rm_work"
 `ROS_DISTRO_TYPE=ros2` 一并带进来了 —— 也因此同一个 meta-ros 仓里的
 `meta-ros2-humble` / `-kilted` / `-lyrical` **不能同时登记**。
 
-meta-qt5 只为 `rviz2` 而来(它的 `DEPENDS` 里有 `qtbase`,而 Qt5 既不在 poky
-也不在 meta-openembedded)。把 `LUBANCAT_ROS_VARIANT` 降到 `ros-base` 或
-`ros-core` 之后,这一层连同 BBLAYERS 里那一行都可以拿掉。
+**rviz2 / rqt 不装在板上**,跑在开发机 —— ROS 2 的中间件是 DDS(`ros-core` 拉的
+是 `rmw-fastrtps-cpp`),订阅板上的 topic 不需要跟节点同机。这块板没有显示栈,
+桌面 GL 也只有软件渲染(`GALLIUMDRIVERS = "swrast"`),把 rviz2 编进去也没处显示。
+理由全表见 `docs/ros-dev-image/design.html`。因此不需要 meta-qt5。
 
 ## 宿主机要求
 
