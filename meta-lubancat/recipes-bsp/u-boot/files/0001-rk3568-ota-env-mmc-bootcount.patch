@@ -1,0 +1,83 @@
+From: meta-lubancat A/B OTA
+Subject: [PATCH] rk3568: env 落盘 eMMC + bootcount 安全网(A/B OTA 前置)
+
+为 RAUC A/B 升级补齐 u-boot 侧前提(阶段 0 实测依据见
+yocto-rk3566-docs/plans/ota.md,2026-09-12):
+
+- env 存储选 MMC(stock 默认 ENV_IS_NOWHERE,saveenv 无后端);
+  偏移 0x1F8000 = eMMC 实测空隙 [扇区3758,4096) 尾部:Kconfig 默认
+  0x3f8000 撞在 uboot 分区(p1,扇区 4096 起)正中,不可沿用。
+  CONFIG_SYS_MMC_ENV_DEV=0 已由 evb_rk3568.h 提供。
+- CMD_SETEXPR:stock 显式关闭;bootcmd 槽位逻辑(setexpr/itest)要用。
+- bootcount:本树 drivers/bootcount/Kconfig 被 vendor 裁过,
+  BOOTCOUNT_LIMIT/BOOTCOUNT_ENV 两个主线符号只剩 C 代码 ifdef 引用
+  (common/autoboot.c 的 bootlimit→altbootcmd 逻辑、Makefile 的
+  obj-$(CONFIG_BOOTCOUNT_ENV)),Kconfig 里没有,defconfig 写了会被
+  olddefconfig 静默丢弃。故:Kconfig 补回 BOOTCOUNT_ENV(挂在本树
+  存在的 BOOTCOUNT 菜单下,选 env 后端,其实现恰按 RAUC 语义——
+  upgrade_available 立着才持久化 bootcount);BOOTCOUNT_LIMIT 是
+  纯 C 门控,按 2017.09 惯例(am335x_evm.h 等)走 evb_rk3568.h 的
+  老式 #define。
+
+板上验证门(阶段 0 结论 + 阶段 1 验收 A1/A2/A7):
+  .config 六值 / uboot.img strings saveenv,setexpr / 断电后变量还在。
+
+Upstream-Status: Inappropriate [board-specific OTA enablement]
+
+diff --git a/configs/rk3568_defconfig b/configs/rk3568_defconfig
+index db14f5e..c3c8938 100644
+--- a/configs/rk3568_defconfig
++++ b/configs/rk3568_defconfig
+@@ -28,6 +28,11 @@ CONFIG_SPL_FIT_IMAGE_POST_PROCESS=y
+ CONFIG_SPL_FIT_HW_CRYPTO=y
+ # CONFIG_SPL_SYS_DCACHE_OFF is not set
+ CONFIG_BOOTDELAY=0
++CONFIG_BOOTCOUNT=y
++CONFIG_BOOTCOUNT_ENV=y
++CONFIG_ENV_IS_IN_MMC=y
++CONFIG_ENV_OFFSET=0x1F8000
++CONFIG_ENV_SIZE=0x8000
+ CONFIG_SYS_CONSOLE_INFO_QUIET=y
+ # CONFIG_DISPLAY_CPUINFO is not set
+ CONFIG_ANDROID_BOOTLOADER=y
+@@ -73,7 +78,7 @@ CONFIG_CMD_NAND=y
+ CONFIG_CMD_USB=y
+ CONFIG_CMD_USB_MASS_STORAGE=y
+ # CONFIG_CMD_ITEST is not set
+-# CONFIG_CMD_SETEXPR is not set
++CONFIG_CMD_SETEXPR=y
+ CONFIG_CMD_TFTPPUT=y
+ CONFIG_CMD_TFTP_BOOTM=y
+ CONFIG_CMD_TFTP_FLASH=y
+diff --git a/drivers/bootcount/Kconfig b/drivers/bootcount/Kconfig
+index c9d627c..5d0edbd 100644
+--- a/drivers/bootcount/Kconfig
++++ b/drivers/bootcount/Kconfig
+@@ -13,6 +13,13 @@ config BOOTCOUNT
+ 
+ if BOOTCOUNT
+ 
++config BOOTCOUNT_ENV
++	bool "Boot counter in environment"
++	help
++	  The bootcount is kept in the environment variable "bootcount" and
++	  only persisted while "upgrade_available" is set.  This is the
++	  scheme expected by RAUC-style A/B update agents.
++
+ config BOOTCOUNT_EXT
+ 	bool "Boot counter on EXT filesystem"
+ 	help
+diff --git a/include/configs/evb_rk3568.h b/include/configs/evb_rk3568.h
+index f7318c3..8a2c604 100644
+--- a/include/configs/evb_rk3568.h
++++ b/include/configs/evb_rk3568.h
+@@ -19,6 +19,9 @@
+ 
+ #define CONFIG_SYS_MMC_ENV_DEV		0
+ 
++/* A/B OTA: bootlimit/altbootcmd 安全网(见 common/autoboot.c)。 */
++#define CONFIG_BOOTCOUNT_LIMIT
++
+ #undef CONFIG_BOOTCOMMAND
+ #define CONFIG_BOOTCOMMAND RKIMG_BOOTCOMMAND
+ 
