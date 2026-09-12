@@ -42,5 +42,5 @@ part --source rawcopy --sourceparams="file=uboot.img" --part-name uboot --offset
 part --source rawcopy --sourceparams="file=trust.img" --part-name trust --align 4
 part --source rawcopy --sourceparams="file=boot.img" --part-name boot --align 4
 part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_a --uuid ${RK_ROOTDEV_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
-part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_b --uuid 61500000-0000-4b53-8000-1d28000054a9 --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
+part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_b --uuid ${RK_ROOTDEV_B_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
 part /var/lib/containers --fstype ext4 --part-name data --label data --use-label --size 2G --align 8192
