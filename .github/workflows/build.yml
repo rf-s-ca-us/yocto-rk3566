@@ -174,7 +174,7 @@ jobs:
           # 变量 ${VIRTUAL-RUNTIME_container_runtime},实际包名带后缀
           # (runc-opencontainers 之类)。上一轮写成 '^runc ' 就漏掉了,
           # 于是"缺 runtime"是模式的错,不是镜像的错。
-          pat='^(podman|conmon|catatonit|crun|runc|netavark|aardvark|slirp4netns|fuse-overlayfs|skopeo|iptables|containers|nsenter|kernel-module-8821cu|wpa-supplicant|lubancat-netcfg|lubancat-wifi|lubancat-ssh-authkeys)'
+          pat='^(podman|conmon|catatonit|crun|runc|netavark|aardvark|slirp4netns|fuse-overlayfs|skopeo|iptables|containers|nsenter|kernel-module-8821cu|wpa-supplicant|lubancat-netcfg|lubancat-wifi|lubancat-ssh-authkeys|hermes-agent|hermes-python|lubancat-nodejs|ripgrep|mihomo|vscode-server|ffmpeg)'
           {
             echo "## 镜像内容自查"
             echo
@@ -190,6 +190,12 @@ jobs:
           # OCI runtime 是硬门槛:没有它 podman 装了也跑不起来,而构建照样绿
           grep -qE '^(crun|runc)' "$m" \
             || echo "::warning::manifest 里没有 crun/runc —— podman 缺 OCI runtime,容器起不来"
+
+          # hermes 七件是本轮设计的交付本体,缺一即红——不是 warning
+          fail_hermes=0
+          for pkg in hermes-agent hermes-python lubancat-nodejs ripgrep mihomo vscode-server ffmpeg; do
+            grep -qE "^${pkg}[[:space:]]" "$m" || { echo "::error::manifest 缺 $pkg"; fail_hermes=1; }
+          done
 
           # 包在不在,和"运行时要的那几个文件在不在",是两件事。
           # podman 没有 /etc/containers/policy.json 会在 pull 时直接失败
@@ -211,6 +217,8 @@ jobs:
           else
             echo "::warning::没有 rootfs.tar.gz,跳过文件级检查"
           fi
+          # 新增的退出码只覆盖 hermes 硬门;上面的容器组仍是 warning,行为不变
+          exit $fail_hermes
 
       - name: dtb 自查
         if: always()
@@ -363,6 +371,14 @@ jobs:
           echo "=== 捞出来的 ==="
           ls -lh out/ || true
           du -sh out/ || true
+
+          # 尺寸记录:update.img 按 A/B 双槽随 rootfs 两倍涨,字节数与烧录时长一起可查
+          {
+            echo "### 镜像尺寸"
+            echo '```'
+            ls -l out/*.img 2>/dev/null | awk '{printf "%12d  %8.1f MiB  %s\n", $5, $5/1048576, $9}'
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
 
       - uses: actions/upload-artifact@v4
         if: always()
