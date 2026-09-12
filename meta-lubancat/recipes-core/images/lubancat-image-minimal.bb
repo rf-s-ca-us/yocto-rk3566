@@ -31,3 +31,8 @@ IMAGE_INSTALL:append = " kernel-module-8821cu wpa-supplicant"
 # 地址通了还得进得去:镜像里只有 sshd 没有任何凭据,root 密码为空而 sshd 不收
 # 空密码。塞开发机的公钥,重烧一次仍然进得去。
 IMAGE_INSTALL:append = " lubancat-ssh-authkeys lubancat-wifi"
+
+# A/B OTA:Linux 侧读写 u-boot env 的工具与位置配置(libubootenv 的命令在
+# -bin 子包)。u-boot 侧 env 落盘由 recipes-bsp/u-boot 的 bbappend 补丁负责,
+# 两边的偏移必须同源 —— fw_env.config 的注释里写着对齐关系。
+IMAGE_INSTALL:append = " libubootenv libubootenv-bin lubancat-fw-env"
