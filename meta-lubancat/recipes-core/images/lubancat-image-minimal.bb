@@ -15,10 +15,14 @@ IMAGE_FEATURES:append = " ssh-server-openssh"
 
 IMAGE_INSTALL:append = " kernel-modules"
 
-# Hermes Agent 以容器跑:它要 Python 3.11 + Node.js + ripgrep + ffmpeg,
-# 全塞进 rootfs 等于把镜像和它的版本焊死。podman 无守护进程,不像 docker
-# 那样常驻一个 root daemon,在单板上更划算。
+# 容器运行时保留(拍板 1.3):Hermes 已原生进镜像,podman 不再承载它,但
+# board-acceptance.sh 的三项容器门与 data 分区挂载点仍指向容器存储,现在删除
+# 会连带改 OTA 验收口径。是否删除待 Hermes 原生稳定后单独拍板。
 IMAGE_INSTALL:append = " podman"
+
+# vscode-server 的兜底:版本错配时客户端回退自装的正路是板上 curl(busybox wget 无
+# 证书校验不可靠)。ca-certificates 同时是 hermes venv 的 TLS 信任源(wrapper 保底指它)。
+IMAGE_INSTALL:append = " curl ca-certificates"
 
 # poky 默认只给一份 80-wired.network,而板子既要能直连 PC(静态)又要能接
 # 路由器(DHCP),还要一个能通的 NTP —— 板子没有电池 RTC。见 lubancat-netcfg。
@@ -36,3 +40,10 @@ IMAGE_INSTALL:append = " lubancat-ssh-authkeys lubancat-wifi"
 # -bin 子包)。u-boot 侧 env 落盘由 recipes-bsp/u-boot 的 bbappend 补丁负责,
 # 两边的偏移必须同源 —— fw_env.config 的注释里写着对齐关系。
 IMAGE_INSTALL:append = " libubootenv libubootenv-bin lubancat-fw-env"
+
+# Hermes 原生件:venv 组装 + 官方预编译供给件,各自 recipe 见 recipes-devtools /
+# recipes-extended / recipes-connectivity。hermes-agent 会经 RDEPENDS 连带拉进
+# ffmpeg(poky oe-core 现成 recipe,不在 meta-openembedded)。供给件在此显式列出,
+# 是镜像契约的一部分,而不是靠依赖传递"顺便"进来;vscode-server 与 hermes 无
+# 运行时交集,同列是它也是本轮交付的预编译件(拍板 1.1)。
+IMAGE_INSTALL:append = " hermes-python hermes-agent lubancat-nodejs ripgrep mihomo vscode-server"
