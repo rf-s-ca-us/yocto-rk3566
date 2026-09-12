@@ -1,0 +1,15 @@
+[Unit]
+Description=mihomo 代理(hermes 出站依赖 127.0.0.1:7890)
+After=network-online.target
+Wants=network-online.target
+# 配置运行时人工放:没有 config.yaml 时直接跳过而不是起来报错刷日志
+ConditionPathExists=/etc/mihomo/config.yaml
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mihomo -d /etc/mihomo
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
