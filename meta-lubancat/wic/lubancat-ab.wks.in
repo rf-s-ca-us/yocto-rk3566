@@ -6,16 +6,22 @@
 #
 # 槽位识别用分区 UUID 的前缀(root=PARTUUID=614e0000-0000 是短前缀匹配,
 # 阶段 0 实测):
-#   rootfs-a 沿用 ${RK_ROOTDEV_UUID} = 614e0000-0000-…—— vendor dtsi 的
+#   rootfs_a 沿用 ${RK_ROOTDEV_UUID} = 614e0000-0000-…—— vendor dtsi 的
 #     chosen/bootargs 写死了这个短前缀,烧进共享 boot 分区的 DTB 决定默认
 #     从 a 槽起;gen_rkparameter 的 "uuid: rootfs=" 也用同一变量,同源。
-#   rootfs-b 用 61500000-0000-…—— 前缀与 a 不冲突即可,阶段 2 由
+#   rootfs_b 用 61500000-0000-…—— 前缀与 a 不冲突即可,阶段 2 由
 #     u-boot env 的选槽逻辑引用它(BOOT_ORDER 约定,不发明新变量)。
 #   data 有 LABEL=data(--label 设 mkfs 卷标,--use-label 让 wic 写进 fstab
 #     的设备名用 LABEL= 而不是它内部的 /dev/sdaN)→ wic 自动在两个槽的
 #     /etc/fstab 里都写 "LABEL=data /var/lib/containers ext4 …"(wic 对非 /
 #     挂载点分区统一注入,两个 / 槽互不干扰)。升级只换 rootfs,容器镜像
 #     与数据原地存活。
+#
+# ⚠ 分区名必须用下划线(rootfs_a/rootfs_b),不能用连字符:gen_rkupdateimg
+# 按 `*_a`/`*_b` 映射分区名 → 打包镜像,连字符不匹配会把 rootfs 段从
+# update.img 里静默丢掉(2026-09-12 实测:update.img 缩水到 23MB)。
+# 两槽在 update.img 里引用同一份 rootfs.img —— 初始 b 槽 = a 的副本,
+# 这正是 A/B 需要的初始状态。
 #
 # data 尺寸只是镜像内的初始值:parameter.txt 生成时 RK_PARTITION_GROW=1
 # 把最后一个分区标成 grow,RKDevTool 烧录时吃满剩余 eMMC;ext4 文件系统
@@ -35,6 +41,6 @@ part --source rawcopy --sourceparams="file=idblock.img" --align 32 --no-table
 part --source rawcopy --sourceparams="file=uboot.img" --part-name uboot --offset 2M
 part --source rawcopy --sourceparams="file=trust.img" --part-name trust --align 4
 part --source rawcopy --sourceparams="file=boot.img" --part-name boot --align 4
-part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs-a --uuid ${RK_ROOTDEV_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
-part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs-b --uuid 61500000-0000-4b53-8000-1d28000054a9 --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
+part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_a --uuid ${RK_ROOTDEV_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
+part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_b --uuid 61500000-0000-4b53-8000-1d28000054a9 --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
 part /var/lib/containers --fstype ext4 --part-name data --label data --use-label --size 2G --align 8192
