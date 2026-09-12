@@ -270,8 +270,18 @@ jobs:
           cfg=$(find build/tmp/work -path '*linux-rockchip*standard-build/.config' | head -1) || true
           if [ -z "${cfg:-}" ]; then
             if [ "${{ steps.bitbake.outputs.code }}" = "0" ]; then
-              echo "::error::构建成功却找不到内核 .config,自查无从做起"
-              exit 1
+              if grep -q 'Running task .*linux-rockchip.*:do_configure' build/bitbake.log; then
+                echo "::error::内核这轮真编译过却找不到 .config —— 自查的 find 模式漂了,先修模式"
+                exit 1
+              fi
+              # 内核任务全 sstate 命中的轮:.config 根本不会被物化到盘上。
+              # 而配置输入一变 sstate 必失配、内核必本地重配、.config 必在 ——
+              # 所以走到这里的轮,配置输入与上一次真编译轮完全相同,同样的
+              # .config 那一轮已经被查过。降级为 warning,不 block。
+              # ("Running task" 只出现在真任务行;setscene 行叫
+              #   "Running setscene task",不会误入这个 grep。)
+              echo "::warning::内核全量缓存命中,.config 未落盘,跳过内核配置自查(输入与上轮相同)"
+              exit 0
             fi
             echo "::warning::构建未走到配置内核,跳过内核配置自查"
             exit 0
