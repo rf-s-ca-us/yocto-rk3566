@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes gateway (hermes-agent)
+Documentation=https://github.com/NousResearch/hermes-agent
+After=network-online.target
+Wants=network-online.target
+# 条件守卫属于 Unit 段(systemd 只在 [Unit] 解析 Condition*,放 [Service] 会被
+# "Unknown key name" 忽略)。.env 与 mihomo 的 config.yaml 同属运行时人工放:
+# 缺它时不给 5 秒一次的崩溃循环,而是一个明确的 condition failed 状态
+ConditionPathExists=/root/.hermes/.env
+
+[Service]
+Type=simple
+Environment=HOME=/root
+ExecStart=/usr/local/lib/hermes-venv/bin/python3 -m hermes_cli.main gateway run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

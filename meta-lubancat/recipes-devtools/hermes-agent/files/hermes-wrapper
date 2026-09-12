@@ -1,0 +1,9 @@
+#!/bin/sh
+# hermes 入口:venv 解释器 + 模块启动,与上游 systemd unit 模板的 ExecStart 同形态。
+# PATH 前置 nodejs:懒依赖(TUI/浏览器 bootstrap)运行时要找 node>=20。
+# SSL_CERT_FILE 兜底:PBS 解释器构建于 Ubuntu,其默认 CA 路径假设未必命中 Yocto 的
+# 证书布局;统一指到 ca-certificates 的 bundle,自带 certifi 的 http 栈不受影响。
+export HOME="${HOME:-/root}"
+export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+export PATH="/usr/local/lib/nodejs/node-v22.23.2-linux-arm64/bin:$PATH"
+exec /usr/local/lib/hermes-venv/bin/python3 -m hermes_cli.main "$@"
