@@ -41,3 +41,14 @@ FILES:${PN} = "/root/.vscode-server"
 # gcc-runtime.inc FILES:libstdc++ = "${libdir}/libstdc++.so.*";
 # libgcc.inc PACKAGES 含主包 ${PN}=libgcc(libgcc_s.so.1 走默认 FILES:${PN})。
 RDEPENDS:${PN} += "libstdc++ libgcc"
+
+# 树内 4 个可执行的 #!/bin/bash 脚本:out/vs/base/node/cpuUsage.sh 与
+# extensions/ms-vscode.js-debug/.../terminateProcess.sh 服务端运行时真会拉起,
+# jschardet scripts 两个是随包的 0775。file-rdeps 对可执行脚本硬查 shebang
+# 解释器(npm completion.sh round 5 实证),提供者 bash 必须进 RDEPENDS。
+# katex 源码自带 3 个 0775 的 perl 字体工具(makeBlacker/makeFF/mapping.pl,
+# shebang "#! /usr/bin/perl"),同理需要 perl 提供者 /usr/bin/perl。
+# env 形态 shebang(env node x14、env python3 x4、env sh x4)被 file-rdeps
+# 忽略(insane.bbclass 忽略表含 /usr/bin/env;hermes-python 全 env 树 round 4
+# QA 通过实证);katex Makefile 的 #!gmake 是 0644 非可执行,不记依赖。
+RDEPENDS:${PN} += "bash perl"

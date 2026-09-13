@@ -38,3 +38,10 @@ FILES:${PN} = "/usr/local/lib/nodejs /usr/local/bin/node /usr/local/bin/npm /usr
 # .so/.a,dev-so/staticdev 无涉)。包名取自 pinned poky(b2c16f1e):gcc-runtime.inc
 # FILES:libstdc++ = "${libdir}/libstdc++.so.*";libgcc.inc 主包 ${PN}=libgcc。
 RDEPENDS:${PN} += "libstdc++ libgcc"
+
+# npm 自带 completion.sh(0755)的 shebang 是 #!/bin/bash,file-rdeps 对可执行
+# 脚本硬查 shebang 解释器,提供者必须是包名 bash(round 5 CI 实证)。bin/npm、
+# bin/npx 两个包装脚本(0755)是 #!/usr/bin/env bash,QA 虽忽略 env 形态,
+# 运行时跑 npm/npx 同样要 bash。同树 node-gyp 的 macOS_Catalina_acid_test.sh
+# 是 0644 的 bash shebang,rpmdeps 不为非可执行脚本记依赖,一并被 bash 覆盖。
+RDEPENDS:${PN} += "bash"
