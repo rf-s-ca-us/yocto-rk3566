@@ -9,10 +9,18 @@ LICENSE = "GPL-3.0-only"
 # 这个二进制按 tag 时的许可走,tag 上是 GPL-3.0 规范全文;两处不一致以 pin 为准)
 LIC_FILES_CHKSUM = "file://mihomo.LICENSE;md5=1ebbd3e34237af26da5dc08a4e440464"
 
-SRC_URI = "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-linux-arm64-v1.19.30.gz;downloadfilename=mihomo-linux-arm64-v1.19.30.gz \
-           https://raw.githubusercontent.com/MetaCubeX/mihomo/v1.19.30/LICENSE;downloadfilename=mihomo.LICENSE"
-SRC_URI[sha256sum] = "58896873736d28628f66de3677c8654fa0f180662523148e136cff4f6e890069"
-SRC_URI[sha256sum] = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+# file://mihomo.service 必须显式声明:files/ 下有文件不等于会进 WORKDIR,
+# 不声明则 do_install 拿不到它(round 6 修 fetch 时预判的下一轮挂点)
+SRC_URI = "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-linux-arm64-v1.19.30.gz;downloadfilename=mihomo-linux-arm64-v1.19.30.gz;name=binary \
+           https://raw.githubusercontent.com/MetaCubeX/mihomo/v1.19.30/LICENSE;downloadfilename=mihomo.LICENSE;name=license \
+           file://mihomo.service"
+# 校验和逐 URI 显式 name= 钉死:bitbake 对无名 URI 统一查裸 flag "sha256sum",
+# 两行赋值只有最后一行生效并作用于全部无名 URI(round 6 CI 实证 .gz 被拿
+# LICENSE 的 sha 校验报 mismatch)。这两个 URL 的内容都可能被上游重发布
+# (mihomo release 资产可重传),sha256 钉死就是防这个——上游重发布致内容
+# 变化时更新对应值,并在 commit 里留痕。
+SRC_URI[binary.sha256sum] = "58896873736d28628f66de3677c8654fa0f180662523148e136cff4f6e890069"
+SRC_URI[license.sha256sum] = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
 
 COMPATIBLE_HOST = "aarch64.*-linux"
 S = "${WORKDIR}"

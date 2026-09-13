@@ -8,10 +8,15 @@ docs/hermes-native/design.html 第 7 节记录。"
 LICENSE = "Proprietary"
 LIC_FILES_CHKSUM = "file://vscode-server-linux-arm64/LICENSE;md5=8d09a4b68713590a3ed601f545e79e29"
 
-SRC_URI = "https://update.code.visualstudio.com/commit:a44adf7f53e00964ab890f9f8758a334f1fc15bc/server-linux-arm64/stable;downloadfilename=vscode-server-a44adf7f-linux-arm64.tar.gz \
-           https://update.code.visualstudio.com/commit:a44adf7f53e00964ab890f9f8758a334f1fc15bc/cli-alpine-arm64/stable;downloadfilename=vscode-cli-a44adf7f-alpine-arm64.tar.gz"
-SRC_URI[sha256sum] = "87d479525d9e02c2139af824ac339a71122a9b2cea79ef03abb74f0fc574d631"
-SRC_URI[sha256sum] = "aec9dfd6e17c8a29febd7e95aef2767832e68101f398faf151826b820d73636f"
+SRC_URI = "https://update.code.visualstudio.com/commit:a44adf7f53e00964ab890f9f8758a334f1fc15bc/server-linux-arm64/stable;downloadfilename=vscode-server-a44adf7f-linux-arm64.tar.gz;name=server \
+           https://update.code.visualstudio.com/commit:a44adf7f53e00964ab890f9f8758a334f1fc15bc/cli-alpine-arm64/stable;downloadfilename=vscode-cli-a44adf7f-alpine-arm64.tar.gz;name=cli"
+# 校验和逐 URI 显式 name= 钉死:bitbake 对无名 URI 统一查裸 flag "sha256sum",
+# 两行赋值只有最后一行生效并作用于全部无名 URI(round 6 CI 实证 server 被拿
+# CLI 的 sha 校验报 mismatch)。stable 通道按 commit 重发布时内容可能变化,
+# sha256 钉死就是防这个——上游重发布致内容变化时更新对应值,并在 commit
+# 里留痕。
+SRC_URI[server.sha256sum] = "87d479525d9e02c2139af824ac339a71122a9b2cea79ef03abb74f0fc574d631"
+SRC_URI[cli.sha256sum] = "aec9dfd6e17c8a29febd7e95aef2767832e68101f398faf151826b820d73636f"
 
 COMPATIBLE_HOST = "aarch64.*-linux"
 S = "${WORKDIR}"
