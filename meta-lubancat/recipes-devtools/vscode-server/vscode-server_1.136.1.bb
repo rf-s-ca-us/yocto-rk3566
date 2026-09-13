@@ -26,6 +26,18 @@ do_install() {
 		${D}/root/.vscode-server/cli/servers/Stable-a44adf7f53e00964ab890f9f8758a334f1fc15bc/server/
 	# CLI tar 内是单文件 code(musl 静态,无顶层目录),bitbake 已解到 WORKDIR
 	install -m 0755 ${WORKDIR}/code ${D}/root/.vscode-server/code-a44adf7f53e00964ab890f9f8758a334f1fc15bc
+	# 属主归零:do_unpack 非 root 解包把文件属主重置为构建用户(GH runner 是
+	# uid 1001,归档元数据是否 0/0 无关),cp -a 把这次 chown 记进 pseudo,
+	# package_write_rpm 的 getpwuid 映射不到即 KeyError(hermes-python round 4
+	# CI 实证同一机制)。install 出的 code 是新建文件,本就 root,一并覆盖无害。
+	chown -R root:root ${D}/root/.vscode-server
 }
 
 FILES:${PN} = "/root/.vscode-server"
+
+# server 自带的 node 与 13 个 native 模块动态链 libstdc++.so.6 / libgcc_s.so.1
+# (readelf 预扫实证:node 及 node-pty/kerberos/sqlite3/spdlog/vsda 等 .node);
+# 本包未跳过 file-rdeps,提供者必须进 RDEPENDS。包名取自 pinned poky(b2c16f1e):
+# gcc-runtime.inc FILES:libstdc++ = "${libdir}/libstdc++.so.*";
+# libgcc.inc PACKAGES 含主包 ${PN}=libgcc(libgcc_s.so.1 走默认 FILES:${PN})。
+RDEPENDS:${PN} += "libstdc++ libgcc"

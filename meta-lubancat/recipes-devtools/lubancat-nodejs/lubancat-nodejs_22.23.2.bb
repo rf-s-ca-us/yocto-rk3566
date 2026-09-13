@@ -26,6 +26,15 @@ do_install() {
 	ln -sf ../lib/nodejs/node-v22.23.2-linux-arm64/bin/node ${D}/usr/local/bin/node
 	ln -sf ../lib/nodejs/node-v22.23.2-linux-arm64/bin/npm ${D}/usr/local/bin/npm
 	ln -sf ../lib/nodejs/node-v22.23.2-linux-arm64/bin/npx ${D}/usr/local/bin/npx
+	# 属主归零:官方 tarball 内文件 uid/gid 就是 1001/1001(tar --numeric-owner 实证),
+	# 非 root 解包后属主仍是构建用户 uid,cp -a 把 chown 记进 pseudo,package_write_rpm
+	# 的 getpwuid 映射不到即 KeyError(round 4 CI 在 hermes-python 上实证同一机制)。
+	chown -R root:root ${D}/usr/local/lib/nodejs
 }
 
 FILES:${PN} = "/usr/local/lib/nodejs /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx"
+
+# bin/node 动态链 libstdc++.so.6 / libgcc_s.so.1(readelf 预扫实证;发行树内无
+# .so/.a,dev-so/staticdev 无涉)。包名取自 pinned poky(b2c16f1e):gcc-runtime.inc
+# FILES:libstdc++ = "${libdir}/libstdc++.so.*";libgcc.inc 主包 ${PN}=libgcc。
+RDEPENDS:${PN} += "libstdc++ libgcc"

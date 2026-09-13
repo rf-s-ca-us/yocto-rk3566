@@ -25,6 +25,25 @@ INSANE_SKIP:${PN} += "already-stripped ldflags libdir"
 do_install() {
 	install -d ${D}/usr/local/lib/hermes-python
 	cp -a ${S}/. ${D}/usr/local/lib/hermes-python/
+	# 属主归零:do_unpack 不在 pseudo 下,非 root 解包把 tarball 内文件属主重置为
+	# 构建用户(GH Actions runner 是 uid 1001),cp -a 会把这次 chown 原样记进 pseudo
+	# ——package_write_rpm 的 get_attr 走 getpwuid 映射不到该 uid,直接 KeyError
+	# (round 4 CI 实证)。chown 让打包期伪根里 stat 即为 root。
+	chown -R root:root ${D}/usr/local/lib/hermes-python
 }
+
+# 预编译发行版布局自带链接期符号链接与静态库:lib/libpython3.11.so 符号链接
+# (dev-so 门)、itcl4.3.8/libitclstub*.a 静态库(staticdev 门),round 4 CI 两门
+# 实证报错。整包预编译件语义下不做 -dev/-staticdev 拆包,这两门不适用,跳过。
+INSANE_SKIP:${PN} += "dev-so staticdev"
+
+# lib-dynload/_crypt.cpython-311-*.so 动态链 libcrypt.so.1。pinned poky(b2c16f1e)
+# 的默认 libxcrypt 走 --disable-obsolete-api 只出 libcrypt.so.2;libcrypt.so.1 的
+# 提供者是 libxcrypt-compat(libxcrypt-compat_4.4.36.bb:API="--enable-obsolete-api",
+# do_install 删掉头文件与 dev 链接后,libcrypt.so.1 按默认 FILES:${PN} 的
+# ${libdir}/lib*${SOLIBS} 落进主包)。DEPENDS 一并钉上,让自动 shlib 依赖解析
+# 能在依赖树里找到提供者,否则 do_package_qa 的 file-rdeps 报 fatal。
+DEPENDS += "libxcrypt-compat"
+RDEPENDS:${PN} += "libxcrypt-compat"
 
 FILES:${PN} = "/usr/local/lib/hermes-python"

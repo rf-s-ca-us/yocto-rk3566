@@ -86,6 +86,12 @@ EOF
 
 	install -m 0755 ${WORKDIR}/hermes-wrapper ${D}/usr/local/bin/hermes
 
+	# 属主归零:site-pkgs(uv 在 do_compile 生成)与 ${S}(git clone)在 CI 上属
+	# 构建用户 uid 1001,cp -a 把 chown 记进 pseudo,package_write_rpm 的 getpwuid
+	# 映射不到即 KeyError(hermes-python round 4 CI 实证同一机制)。install 出的
+	# wrapper/unit 本就新建为 root,一并覆盖无害。
+	chown -R root:root ${D}/usr/local/lib/hermes-venv ${D}/usr/local/lib/hermes-agent
+
 	install -d ${D}${systemd_system_unitdir} ${D}${nonarch_libdir}/tmpfiles.d
 	install -m 0644 ${WORKDIR}/hermes-gateway.service ${D}${systemd_system_unitdir}/hermes-gateway.service
 	install -m 0644 ${WORKDIR}/hermes-gateway-tmpfiles.conf ${D}${nonarch_libdir}/tmpfiles.d/hermes-gateway.conf
