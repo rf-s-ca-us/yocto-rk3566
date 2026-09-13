@@ -21,7 +21,17 @@ SRC_URI[cli.sha256sum] = "aec9dfd6e17c8a29febd7e95aef2767832e68101f398faf151826b
 COMPATIBLE_HOST = "aarch64.*-linux"
 S = "${WORKDIR}"
 
+# 预编译发行树不做 strip/调试分离,上游发布字节原样进来原样出去(pin-and-verify):
+# 树内混有微软捆绑的异构 ELF 助手件——file 实扫 24 个 ELF 里 3 个 x86-64:
+# @github/copilot-linux-arm64 的 tgrep/bin/linux-x64/tgrep 与 ripgrep/bin/linux-x64/rg、
+# @vscode/sandbox-runtime/vendor/seccomp/x64/apply-seccomp。do_package 选 ELF 只看
+# file 输出含 "ELF"不看架构,而 aarch64 交叉 objcopy 不认异构格式,round 7 CI 实证
+# 对 tgrep 跑 objcopy 直接 fatal("Unable to recognise the format of the input file")。
+# 两个门独立(INHIBIT_PACKAGE_STRIP 只关 strip,调试分离是 splitdebuginfo 另一条
+# 路径),不关 DEBUG_SPLIT 则 objcopy --only-keep-debug / --add-gnu-debuglink 照跑,
+# 后者还会改写包内字节。
 INHIBIT_PACKAGE_STRIP = "1"
+INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INSANE_SKIP:${PN} += "already-stripped ldflags arch"
 
 # 摆放位置即客户端"已预装"的唯一判定:cli/servers/Stable-<commit>/server 内容齐即可

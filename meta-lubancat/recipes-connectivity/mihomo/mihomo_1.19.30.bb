@@ -25,7 +25,11 @@ SRC_URI[license.sha256sum] = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6
 COMPATIBLE_HOST = "aarch64.*-linux"
 S = "${WORKDIR}"
 
+# 预编译件统一语义(vscode-server round 7 同源问题):单二进制官方 gz 已 strip,
+# 调试分离是 strip 之外的独立门,不关则 objcopy --only-keep-debug /
+# --add-gnu-debuglink 照跑并改写上游字节——原样进来原样出去,不做。
 INHIBIT_PACKAGE_STRIP = "1"
+INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INSANE_SKIP:${PN} += "already-stripped ldflags"
 
 do_install() {

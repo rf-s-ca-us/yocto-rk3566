@@ -97,6 +97,12 @@ EOF
 	install -m 0644 ${WORKDIR}/hermes-gateway-tmpfiles.conf ${D}${nonarch_libdir}/tmpfiles.d/hermes-gateway.conf
 }
 
+# 预编译件统一语义(vscode-server round 7 同源问题):树内 ELF 全是 uv 按锁装出的
+# manylinux aarch64 .so(wheel-assert 门保证无异构;历轮 CI 开着 strip 也能打包,
+# 旁证可被本架构工具处理),且是上游已 strip 的钉死字节——strip 与调试分离只会
+# 改写它们。两个门独立,须同时关。
+INHIBIT_PACKAGE_STRIP = "1"
+INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INSANE_SKIP:${PN} += "already-stripped ldflags libdir"
 # manylinux .so 不是本层构建产物,库依赖检查(file-rdeps)会误报
 INSANE_SKIP:${PN} += "file-rdeps"

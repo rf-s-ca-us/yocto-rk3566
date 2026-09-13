@@ -17,8 +17,14 @@ COMPATIBLE_HOST = "aarch64.*-linux"
 # install_only tarball 的顶层目录名是 python/
 S = "${WORKDIR}/python"
 
-# 官方发行件原样使用:不重 strip、跳过为源码构建设计的常规检查
+# 官方发行件原样使用:不重 strip、不做调试分离、跳过为源码构建设计的常规检查。
+# 调试分离与 strip 是 package.py 里两个独立门:不关 DEBUG_SPLIT 则 objcopy
+# --only-keep-debug / --add-gnu-debuglink 照跑,后者会改写上游字节。本树纯
+# aarch64(file 实扫 10 个 ELF 无异构,不会像 vscode-server round 7 那样 fatal),
+# 但 bin/python3.11 等上游自带 debug_info,分离等于拆出并重分发上游调试件;
+# pin-and-verify 语义同为"原样进来原样出去"。
 INHIBIT_PACKAGE_STRIP = "1"
+INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 INSANE_SKIP:${PN} += "already-stripped ldflags libdir"
 

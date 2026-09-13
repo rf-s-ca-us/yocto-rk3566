@@ -13,7 +13,13 @@ SRC_URI[sha256sum] = "fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e
 COMPATIBLE_HOST = "aarch64.*-linux"
 S = "${WORKDIR}/node-v22.23.2-linux-arm64"
 
+# 预编译件统一语义(vscode-server round 7 同源问题):strip 与调试分离是
+# package.py 两个独立门,INHIBIT_PACKAGE_STRIP 不覆盖后者——不关 DEBUG_SPLIT,
+# objcopy --only-keep-debug / --add-gnu-debuglink 照跑,后者会改写上游字节。
+# 本树纯 aarch64(file 实扫仅 bin/node 一个 ELF),但官方 node 自带 debug_info
+# 未 strip,分离等于拆出并重分发上游调试件;原样进来原样出去,不做。
 INHIBIT_PACKAGE_STRIP = "1"
+INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 INSANE_SKIP:${PN} += "already-stripped ldflags libdir"
 
