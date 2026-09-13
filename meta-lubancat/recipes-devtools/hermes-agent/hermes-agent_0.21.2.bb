@@ -116,6 +116,15 @@ EOF
 	# 源树按上游 root 安装形态摆 /usr/local/lib/hermes-agent;.git 不进镜像
 	cp -a ${S}/. ${D}/usr/local/lib/hermes-agent/
 	rm -rf ${D}/usr/local/lib/hermes-agent/.git
+	# docker/ 整目录是上游容器运行时入口(entrypoint、tini-shim、s6-rc.d 服务定义、
+	# cont-init.d),板上由 systemd unit + /usr/local/bin/hermes wrapper 起服务,
+	# 无 s6/with-contenv,装进去就是死件。实证依据(round 9 本地实物枚举):
+	# temp/hermes-src 全树 shebang 扫描,唯一非白名单解释器 #!/command/with-contenv sh
+	# 共 5 个全在 docker/ 下,其中 4 个带可执行位(tarball mode 755:02-reconcile-profiles、
+	# s6-rc.d/{dashboard/{run,finish},main-hermes/run})——round 10 do_rootfs 的
+	# "nothing provides /command/with-contenv" 即 rpmdeps 对它们自动生成的解释器
+	# Requires。目录外无第二个异型解释器(其余全部 /bin/sh、/bin/bash、/usr/bin/env*)。
+	rm -rf ${D}/usr/local/lib/hermes-agent/docker
 
 	install -m 0755 ${WORKDIR}/hermes-wrapper ${D}/usr/local/bin/hermes
 
@@ -139,6 +148,46 @@ INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INSANE_SKIP:${PN} += "already-stripped ldflags libdir"
 # manylinux .so 不是本层构建产物,库依赖检查(file-rdeps)会误报
 INSANE_SKIP:${PN} += "file-rdeps"
+
+# ── round 10 do_rootfs 五条 "nothing provides" 的两条根因与处置 ──────────────
+# 报错五条:/command/with-contenv + libjpeg-f7df23c0.so.62.4.0(LIBJPEG_6.2)、
+# liblzma-d6711707.so.5.8.3(XZ_5.0)、libpng16-5a20c924.so.16.58.0(PNG16_0)、
+# libtiff-fb36a6b9.so.6.2.0(LIBTIFF_4.0),均 (64bit)。
+#
+# 机制(全部按 pinned poky b2c16f1e 源码逐行核对):
+# 1) 这些依赖走 per-file 通道:oe/package.py process_filedeps 跑 RPMDEPS
+#    (rpmdeps --alldeps),R 行存成 FILERDEPENDS,再由 package_rpm.bbclass
+#    write_rpm_perfiledata 生成 __find_requires 脚本喂给 rpmbuild(第 685/723 行)
+#    ——该通道不读 PRIVATE_LIBS。与 shlibs 通道(process_shlibs,产出 RDEPENDS)
+#    相互独立。
+# 2) 版本化 soname require 永无提供者:rpm 4.19.1.1 的 elfdeps 工具里,
+#    require 取自 VERNEED 的 vn_file(auditwheel 改写过的哈希 DT_NEEDED),
+#    版本化 provide 却取自 VERDEF 的 BASE 名(上游原始 soname libjpeg.so.62,
+#    auditwheel 不改写)——两者名字永不相等。全树 readelf -V 实扫,哈希名
+#    版本化 require 恰为上述 4 条(dnf 报错与之逐条一致;其余 14 个哈希库只被
+#    无版本符号引用,require 是裸 soname,能被包内裸 soname provide 满足)。
+# 3) PRIVATE_LIBS 在 b2c16f1e 只被 meta/lib/oe/package.py 的 shlibs 机制消费:
+#    1678 行阻止私有 soname 注册为 shlib 提供者,1858 行(fnmatch.fnmatch)
+#    跳过为其解析 RDEPENDS——支持通配符,但救不了 FILERDEPENDS 通道。
+#
+# 处置一:SKIP_FILEDEPS 关掉整条 per-file 通道(process_filedeps 入口
+# 1565/1577 行)。本包是预编译件拼装(venv + 上游源树),文件级 require 要么
+# 无提供者(哈希 soname、with-contenv),要么指向镜像必有的系统库
+# (libc/libstdc++/libgcc/zlib 的真提供关系仍由 process_shlibs 走 objdump
+# NEEDED 解析进 RDEPENDS,显式 RDEPENDS 未动)。oe-core 先例:ltp_20240129
+# 整包 SKIP_FILEDEPS:${PN} = '1'(valgrind-ptest、perl-ptest 同)。
+SKIP_FILEDEPS:${PN} = "1"
+
+# 处置二:PRIVATE_LIBS 做 shlibs 通道卫生——不让 18 个哈希 soname 注册成
+# shlib 提供者,也不为它们做 RDEPENDS 解析。实物枚举(temp/wl/site-pkgs,
+# find -path '*.libs/*'):全仓唯一 *.libs 是 pillow.libs,18 个
+# lib<name>-<8位hex>.so<ver>(libjpeg/liblzma/libpng16/libtiff/libwebp*/libavif/
+# libbrotli*/libfreetype/libharfbuzz/liblcms2/libopenjp2/libsharpyuv/libXau/
+# libxcb/libzstd),objdump -p 全树 140 条 DT_NEEDED 逐一核对,全部同包自带、
+# 无第二个 .libs、无 numpy/scipy 类 openblas 捆绑(本锁闭包里不存在)。
+# 模式即 auditwheel 哈希指纹:标准系统 soname 无 "-<8hex>" 形态,不会误伤
+# libc.so.6/libstdc++.so.6 等真依赖(它们须照常解析)。
+PRIVATE_LIBS:${PN} = "lib*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].so*"
 
 # unit 装而不自启:先手动验通再议 enable——一次只引入一个变量
 inherit systemd features_check
