@@ -5,6 +5,8 @@ DESCRIPTION = "把上游 install.sh 的运行时联网拼装(clone + uv sync + �
 它们无 hash,由 lubancat-nodejs / hermes-python 以官方 SHA 钉死替代。懒依赖在板上运行时\
 经 venv 里的 pip 现装(走 mihomo 出网),落 /root/.hermes 属运行时状态,不是镜像契约。"
 
+# LICENSE 就在 pin 树根目录(git blob 75410e73,MIT,Copyright (c) 2025 Nous
+# Research),md5 按该 blob 实算核对一致;pyproject.toml 亦声明 license = "MIT"。
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=1864e6648a4c302b984b2efd215c7918"
 
@@ -18,6 +20,14 @@ SRC_URI = "gitsm://github.com/NousResearch/hermes-agent.git;protocol=https;branc
 SRCREV = "939e45c91d751fadd94dcd1b873ac3cb44846213"
 SRC_URI[uv.sha256sum] = "745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd"
 PV = "0.21.2"
+
+# round 8 唯一失败的根因:源树从不在默认 S 里。本 poky pin(b2c16f1e)的
+# base_do_unpack 把 WORKDIR 直接交给 fetcher,git fetcher 无 destsuffix 一律
+# 解到 ${WORKDIR}/git;而默认 S=${WORKDIR}/${BP}(hermes-agent-0.21.2)从不
+# 产生——do_populate_lic 的 license-checksum 硬门在 ${S}/LICENSE isfile 上
+# 报 "points to an invalid file"(md5 分支根本没走到),do_compile/do_install
+# 的 ${S} 引用同样悬空。显式对齐解包布局(同层 rtl8821cu_git.bb 同此约定)。
+S = "${WORKDIR}/git"
 
 COMPATIBLE_HOST = "aarch64.*-linux"
 
