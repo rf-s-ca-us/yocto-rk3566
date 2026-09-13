@@ -25,8 +25,9 @@ COMPATIBLE_HOST = "aarch64.*-linux"
 do_compile[network] = "1"
 
 RDEPENDS:${PN} = "hermes-python lubancat-nodejs ripgrep ffmpeg git bash"
-# manylinux wheel(onnxruntime/numpy 等)动态链 libstdc++.so.6,由 gcc-runtime 提供
-RDEPENDS:${PN} += "libstdc++6"
+# manylinux wheel(onnxruntime/numpy 等)动态链 libstdc++.so.6,由 gcc-runtime 提供;
+# 包名是 libstdc++(libstdc++6 是 Debian 的叫法,poky 里没有这个包)
+RDEPENDS:${PN} += "libstdc++"
 
 do_compile() {
 	UV="${WORKDIR}/uv-x86_64-unknown-linux-gnu/uv"
