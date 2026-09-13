@@ -22,6 +22,7 @@ do_install() {
 	cp -a ${S} ${D}/usr/local/lib/nodejs/
 	# 官方包内 bin/npm 本就是相对 symlink(../lib/node_modules/npm/bin/npm-cli.js),
 	# cp -a 原样保留;这里只把三个入口链进 PATH
+	install -d ${D}/usr/local/bin
 	ln -sf ../lib/nodejs/node-v22.23.2-linux-arm64/bin/node ${D}/usr/local/bin/node
 	ln -sf ../lib/nodejs/node-v22.23.2-linux-arm64/bin/npm ${D}/usr/local/bin/npm
 	ln -sf ../lib/nodejs/node-v22.23.2-linux-arm64/bin/npx ${D}/usr/local/bin/npx

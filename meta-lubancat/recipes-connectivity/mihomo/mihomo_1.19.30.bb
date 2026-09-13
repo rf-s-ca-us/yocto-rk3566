@@ -21,6 +21,7 @@ INHIBIT_PACKAGE_STRIP = "1"
 INSANE_SKIP:${PN} += "already-stripped ldflags"
 
 do_install() {
+	install -d ${D}${bindir}
 	install -m 0755 ${WORKDIR}/mihomo-linux-arm64-v1.19.30 ${D}${bindir}/mihomo
 	install -d ${D}${systemd_system_unitdir}
 	install -m 0644 ${WORKDIR}/mihomo.service ${D}${systemd_system_unitdir}/mihomo.service
