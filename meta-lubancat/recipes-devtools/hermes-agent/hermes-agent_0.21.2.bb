@@ -42,13 +42,22 @@ RDEPENDS:${PN} += "libstdc++"
 do_compile() {
 	UV="${WORKDIR}/uv-x86_64-unknown-linux-gnu/uv"
 
-	# 1) 按 pinned uv.lock 交叉导出(--frozen 禁止重解析,--no-header 去掉 index 头)
-	${UV} export --frozen --no-dev --no-emit-project --no-header \
-		--python-platform aarch64 --python-version 3.11 \
+	# 1) 按 pinned uv.lock 导出(--frozen 禁止重解析,--no-header 去掉 index 头)。
+	#    本 recipe 钉死的 uv 0.12.13 的 export 子命令没有 --python-platform/
+	#    --python-version(uv 0.12.13 export --help 实证只有 -p, --python;带
+	#    --python-platform 即 round 9 CI 的 "error: unexpected argument
+	#    '--python-platform' found; tip: a similar argument exists: '--python'")。
+	#    uv.lock 本就是全平台通用锁,导出不按平台过滤、逐行保留 PEP 508 marker,
+	#    平台取舍整体后移到安装步(--python-platform/--python-version 是本版本
+	#    uv pip install 的合法参数,help 实证)。--no-python-downloads 禁 uv
+	#    自管解释器下载,守住"上游自管件一概不用"的红线。
+	${UV} export --frozen --no-dev --no-emit-project --no-header --no-python-downloads \
 		--format requirements-txt -o ${WORKDIR}/req-aarch64.txt
 
 	# 2) wheel 覆盖断言:需 native 却无 aarch64 wheel 的条目数必须为 0,
-	#    纯 Python sdist 放行(pure-sdist.txt)
+	#    纯 Python sdist 放行(pure-sdist.txt)。脚本内含与安装步同口径的
+	#    marker 求值(CPython 3.11/linux/aarch64),win32 专属 fork(pywin32
+	#    等)不计入覆盖统计;对 marker 求值不动的行一律保守视为适用。
 	python3 ${WORKDIR}/wheel-assert.py ${WORKDIR}/req-aarch64.txt \
 		|| bbfatal "wheel 覆盖断言失败,见上方 MUSL-ONLY/阻断行——回 P0 探针重核"
 
@@ -57,18 +66,32 @@ do_compile() {
 	#    在 host 构建成 py3-none-any 再入 target,产物平台无关)。不走"host 先
 	#    pip wheel 再 find-links"是因为本地现构建的 wheel 哈希对不上锁内 sdist 的
 	#    哈希,带 --hash 的需求行会被 uv 拒收。
-	grep -v -F -f ${WORKDIR}/pure-sdist.txt ${WORKDIR}/req-aarch64.txt > ${WORKDIR}/req-wheels.txt
-	${UV} pip install --python-platform aarch64 --python-version 3.11 \
+	#    --python-platform 必须写全三元 aarch64-unknown-linux-gnu:0.12.13 的
+	#    pip install 拒收裸 aarch64("error: invalid value 'aarch64' for
+	#    '--python-platform'",help 的 possible values 即全三元列表)。
+	if [ -s ${WORKDIR}/pure-sdist.txt ]; then
+		grep -v -F -f ${WORKDIR}/pure-sdist.txt ${WORKDIR}/req-aarch64.txt > ${WORKDIR}/req-wheels.txt
+	else
+		# 本锁主闭包 pure_sdist=0 走这里:空 pattern 文件时 grep -v -f 行为跨实现
+		# 不一(GNU grep 全保留;ugrep 全丢弃且非零退出),cp 让语义确定——
+		# req-wheels ≡ req,任何一条都不装成"空需求集"。
+		cp ${WORKDIR}/req-aarch64.txt ${WORKDIR}/req-wheels.txt
+	fi
+	${UV} pip install --no-python-downloads --python-platform aarch64-unknown-linux-gnu --python-version 3.11 \
 		--no-deps --only-binary :all: \
 		--target ${WORKDIR}/site-pkgs -r ${WORKDIR}/req-wheels.txt
 	if [ -s ${WORKDIR}/pure-sdist.txt ]; then
-		${UV} pip install --python-platform aarch64 --python-version 3.11 \
+		${UV} pip install --no-python-downloads --python-platform aarch64-unknown-linux-gnu --python-version 3.11 \
 			--no-deps --no-binary :all: \
 			--target ${WORKDIR}/site-pkgs -r ${WORKDIR}/pure-sdist.txt
 	fi
 
-	# 4) hermes 本体:非 editable wheel(host 构建纯 Python;editable 会指向构建机路径)
-	${UV} pip install --python-platform aarch64 --python-version 3.11 \
+	# 4) hermes 本体:非 editable wheel(host 构建纯 Python;editable 会指向构建机路径)。
+	#    上游 setup.py 守卫 bdist_wheel:非 Nix 构建一律 RuntimeError("Building
+	#    wheels or sdists for hermes-agent is not supported"),HERMES_NIX_BUILD=1
+	#    是其文档化的合法源码构建出口(uv2nix 的 python.nix 同款用法);产物
+	#    py3-none-any 平台无关,本地同版本 uv 实证可交叉装入 --target。
+	HERMES_NIX_BUILD=1 ${UV} pip install --no-python-downloads --python-platform aarch64-unknown-linux-gnu --python-version 3.11 \
 		--no-deps --target ${WORKDIR}/site-pkgs ${S}
 }
 
