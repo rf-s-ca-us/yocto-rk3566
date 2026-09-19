@@ -57,6 +57,10 @@ IMAGE_INSTALL:append = " hermes-python hermes-agent lubancat-nodejs ripgrep miho
 #   首启得有人格式化;实机验收发现板上只有 e2fsck 侧、mke2fs 缺位,当时靠外部
 #   二进制救场。装上它,重烧后一条命令即可自愈,不必再外带工具。
 IMAGE_INSTALL:append = " e2fsprogs-mke2fs"
+
+# 同一场实机验收的第二处:podman 默认能力表缺 NET_RAW,容器内 ping 全灭而
+# DNS/HTTP 出网正常,验收门与现实错位。containers.conf 由本层 recipe 显式给齐。
+IMAGE_INSTALL:append = " lubancat-containers-conf"
 lubancat_fstab_data() {
     if ! grep -q "^LABEL=data" ${IMAGE_ROOTFS}/etc/fstab; then
         echo "LABEL=data  /var/lib/containers  ext4  defaults,nofail  0  2" >> ${IMAGE_ROOTFS}/etc/fstab
