@@ -47,3 +47,19 @@ IMAGE_INSTALL:append = " libubootenv libubootenv-bin lubancat-fw-env"
 # 是镜像契约的一部分,而不是靠依赖传递"顺便"进来;vscode-server 与 hermes 无
 # 运行时交集,同列是它也是本轮交付的预编译件(拍板 1.1)。
 IMAGE_INSTALL:append = " hermes-python hermes-agent lubancat-nodejs ripgrep mihomo vscode-server"
+
+# data 分区随 update.img 开箱即用,缺一不可的两半:
+#   fstab 行 —— wic 路径会把非 / 挂载点注进 fstab,但 update.img 打包路径直接取
+#   rootfs.ext4,注入不发生(2026-09-13 实机验收实测:烧完 fstab 是 stock 原样,
+#   data 没人挂);在 rootfs 收尾时补,wic 已注入的同款行用 grep 挡住不重复。
+#   nofail:万一将来的布局没有 data 分区,不让启动卡在挂载等待。
+#   mke2fs —— 烧录工具只建分区不建文件系统(data:grow 的分区内容不进 update.img),
+#   首启得有人格式化;实机验收发现板上只有 e2fsck 侧、mke2fs 缺位,当时靠外部
+#   二进制救场。装上它,重烧后一条命令即可自愈,不必再外带工具。
+IMAGE_INSTALL:append = " e2fsprogs-mke2fs"
+lubancat_fstab_data() {
+    if ! grep -q "^LABEL=data" ${IMAGE_ROOTFS}/etc/fstab; then
+        echo "LABEL=data  /var/lib/containers  ext4  defaults,nofail  0  2" >> ${IMAGE_ROOTFS}/etc/fstab
+    fi
+}
+ROOTFS_POSTPROCESS_COMMAND:append = " lubancat_fstab_data;"
