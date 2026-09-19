@@ -4,8 +4,10 @@ Documentation=https://github.com/NousResearch/hermes-agent
 # mihomo 是出站前置:飞书国际站(larksuite)的 websocket 从中国大陆直连必超时,
 # 必须经 127.0.0.1:7890(2026-09-19 实机实测)。GLM 中国区(open.bigmodel.cn)
 # 不需要代理,由下面的 NO_PROXY 保持直连。
-After=network-online.target mihomo.service
-Wants=network-online.target
+# 不挂 network-online:它由 networkd-wait-online 守着,本板每轮 boot 都要等满
+# 2 分钟超时(2026-09-19 实机),而本服务只需本机接口——mihomo 只绑 127.0.0.1,
+# gateway 自带断线重连。network.target(本机接口就位)足够。
+After=network.target mihomo.service
 # 条件守卫属于 Unit 段(systemd 只在 [Unit] 解析 Condition*,放 [Service] 会被
 # "Unknown key name" 忽略)。.env 与 mihomo 的 config.yaml 同属运行时人工放:
 # 缺它时不给 5 秒一次的崩溃循环,而是一个明确的 condition failed 状态
