@@ -1,16 +1,23 @@
 [Unit]
 Description=Hermes gateway (hermes-agent)
 Documentation=https://github.com/NousResearch/hermes-agent
-After=network-online.target
+# mihomo 是出站前置:飞书国际站(larksuite)的 websocket 从中国大陆直连必超时,
+# 必须经 127.0.0.1:7890(2026-09-19 实机实测)。GLM 中国区(open.bigmodel.cn)
+# 不需要代理,由下面的 NO_PROXY 保持直连。
+After=network-online.target mihomo.service
 Wants=network-online.target
 # 条件守卫属于 Unit 段(systemd 只在 [Unit] 解析 Condition*,放 [Service] 会被
 # "Unknown key name" 忽略)。.env 与 mihomo 的 config.yaml 同属运行时人工放:
 # 缺它时不给 5 秒一次的崩溃循环,而是一个明确的 condition failed 状态
 ConditionPathExists=/root/.hermes/.env
+ConditionPathExists=/etc/mihomo/config.yaml
 
 [Service]
 Type=simple
 Environment=HOME=/root
+Environment=HTTP_PROXY=http://127.0.0.1:7890
+Environment=HTTPS_PROXY=http://127.0.0.1:7890
+Environment=NO_PROXY=localhost,127.0.0.1,open.bigmodel.cn
 ExecStart=/usr/local/lib/hermes-venv/bin/python3 -m hermes_cli.main gateway run
 Restart=always
 RestartSec=5
