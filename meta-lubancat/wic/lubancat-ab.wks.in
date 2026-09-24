@@ -23,6 +23,10 @@
 # 两槽在 update.img 里引用同一份 rootfs.img —— 初始 b 槽 = a 的副本,
 # 这正是 A/B 需要的初始状态。
 #
+# A/B 容量统一使用 image recipe 算出的 ROOTFS_SIZE(原有规则 + 4 GiB)。
+# 关闭 WIC 默认的 1.3 倍 overhead 与 10 MiB extra-space,避免二次放大;
+# --align 8192 只控制分区起点,不再额外增加文件系统容量。
+#
 # data 尺寸只是镜像内的初始值:parameter.txt 生成时 RK_PARTITION_GROW=1
 # 把最后一个分区标成 grow,RKDevTool 烧录时吃满剩余 eMMC;ext4 文件系统
 # 本身还是 2G,要做 resize2fs 扩容是阶段 2 之后的事(已知缺口,先记录)。
@@ -41,6 +45,6 @@ part --source rawcopy --sourceparams="file=idblock.img" --align 32 --no-table
 part --source rawcopy --sourceparams="file=uboot.img" --part-name uboot --offset 2M
 part --source rawcopy --sourceparams="file=trust.img" --part-name trust --align 4
 part --source rawcopy --sourceparams="file=boot.img" --part-name boot --align 4
-part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_a --uuid ${RK_ROOTDEV_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
-part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_b --uuid ${RK_ROOTDEV_B_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --align 8192
+part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_a --uuid ${RK_ROOTDEV_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --overhead-factor 1 --extra-space 0 --align 8192
+part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_b --uuid ${RK_ROOTDEV_B_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --overhead-factor 1 --extra-space 0 --align 8192
 part /var/lib/containers --fstype ext4 --part-name data --label data --use-label --size 2G --align 8192

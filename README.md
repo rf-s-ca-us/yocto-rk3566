@@ -52,6 +52,27 @@ INHERIT += "rm_work"
 
 然后 `bitbake lubancat-image-minimal`。
 
+## rootfs 容量与 A/B 分区
+
+每份 rootfs 的容量按 **Yocto 原有计算结果 + 4 GiB** 生成,随系统内容增长,
+不固定为 4 GiB。image recipe 的 `IMAGE_ROOTFS_EXTRA_SPACE` 以 KiB 为单位,
+追加 `4194304`,保留上游的容量余量、最小容量和 systemd 额外空间。
+最终容量仍遵循上游对齐规则;4 GiB 是新增的文件系统容量,`df` 显示的可用
+空间还会扣除 ext4 元数据和保留块。
+
+`lubancat-ab.wks.in` 的 `rootfs_a`、`rootfs_b` 都使用该容量,并设置
+`--overhead-factor 1 --extra-space 0`,避免 WIC 再次放大。
+独立 ext4 产物也已经扩容,因此 WIC 与 Rockchip `update.img` 两条烧录路径
+都能获得新增的文件系统容量。A/B 两槽容量相同,引导相关分区与 PARTUUID 不变。
+
+例如原 rootfs 容量为 2.40 GiB,调整后每槽约 6.40 GiB,两槽合计约 12.80 GiB。
+Rockchip `parameter` 保留最后的 `data:grow`,烧录时 data 分区使用剩余空间;
+直接写入 WIC 时,data 仍按布局中的 2 GiB 创建。data 文件系统的初始化/扩容
+仍按原流程处理,分区占满剩余空间不等于文件系统自动扩容。
+
+这是新镜像的分区布局,不会在线调整已经运行的板子。重新烧录前备份需要保留的
+数据,并确认 eMMC 能容纳两份 rootfs、启动内容及所需的数据空间。
+
 ## 宿主机要求
 
 - **不能用 root 跑 bitbake**——OE 的 sanity checker 会直接拒绝

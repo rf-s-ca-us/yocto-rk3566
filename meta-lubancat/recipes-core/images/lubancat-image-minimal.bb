@@ -10,6 +10,13 @@ require recipes-core/images/core-image-minimal.bb
 # 不继承它的话:只出 rootfs.tar.gz + 内核,没有 u-boot、没有 wic,烧不了卡。
 inherit rockchip-image
 
+# 在 Yocto 原有容量计算结果上,给每份 rootfs 再加 4 GiB(单位 KiB)。
+# 用追加表达式保留 core-image-minimal 为 systemd 预留的空间;
+# image.bbclass 在原有 overhead/minimum 之后求和,不会把新增空间乘以余量系数。
+# 必须在文件系统生成阶段增加,使 Rockchip 打包路径拿到的 ext4 也实际扩容。
+# WIC 两个 rootfs 槽关闭自己的二次余量,直接使用同一 ROOTFS_SIZE。
+IMAGE_ROOTFS_EXTRA_SPACE:append = " + 4194304"
+
 # C4 验收要 ssh 通——没有它每次改都得插卡,迭代成本翻倍
 IMAGE_FEATURES:append = " ssh-server-openssh"
 
