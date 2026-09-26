@@ -44,6 +44,7 @@ do_install() {
 	install -m 0644 ${WORKDIR}/lubancat-ota.timer ${D}${systemd_unitdir}/system/
 	install -m 0644 ${WORKDIR}/lubancat-ota-selfcheck.service ${D}${systemd_unitdir}/system/
 
+	install -d ${D}${sysconfdir}
 	echo "${OTA_VERSION}" > ${D}${sysconfdir}/ota-version
 
 	# 屏蔽 meta-rauc 的 rauc-mark-good.service:它在 cmdline 含 rauc.slot 时
