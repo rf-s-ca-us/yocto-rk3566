@@ -1,0 +1,200 @@
+From: meta-lubancat A/B OTA
+Subject: [PATCH] rk3568: A/B 槽位选路——hush + 槽位 env + altbootcmd + root=/rauc.slot 钩子
+
+OTA 阶段 2(Task 2)。依据 docs/plans/2026-09-26-ota-phase23.md「已核实的
+源码侧事实」四条 + 开放项 1 拍板(candidate A,扩展现有补丁系列):
+
+- 纯 env 切不了槽:root= 在共享 boot 分区 DTB 的 chosen/bootargs 里,
+  启动时 bootargs_add_dtb_dtbo()(board.c:1300)把它合并进 env bootargs,
+  env_update_filter()(cmd/nvedit.c:406)语义是后来者按 title 覆盖——
+  DTB 必然后到,任何预先写进 env 的 root= 都会被盖掉;能在 DTB 之后
+  改写 bootargs 的 sys_bootargs 通道(board.c:1280)被 CONFIG_ENVF 门控,
+  而 ENVF depends on ENV_IS_NOWHERE(env/Kconfig:441),0001 已切
+  ENV_IS_IN_MMC,该通道编译期消失。⇒ 唯一钩位 = DTB 合并之后的 C 代码。
+- simple parser 只按 ";" 切分(common/cli_simple.c:175),写不了条件/
+  循环 ⇒ defconfig 加 CONFIG_HUSH_PARSER=y(cmd/Kconfig:14 默认 n);
+  本补丁脚本只用 test/for/setexpr(cmd/test.c 的 -a/-gt/-z/-n 与
+  setexpr 减法均已核),不用 elif 与 ${var#pat} 模式展开。
+- altbootcmd 没有编译期默认入口(env_default.h 只认
+  BOOTCOMMAND/ramboot/nfsboot)⇒ 槽位 env 全部经
+  CONFIG_EXTRA_ENV_SETTINGS 注入(rk3568_common.h 挂 RKIMG_AB_ENV,
+  evb_rk3568.h 定义;未定义该宏的板注入空串,stock 零回归)。
+- C 钩子 bootargs_add_ab_slot() 紧随 bootargs_add_dtb_dtbo() 调用
+  (board.c),BOOT_SLOT → BOOT_ORDER 首项 → 兜底 A 取槽,env_update()
+  覆盖 root= 并追加 rauc.slot=;rootfs_a/b_uuid 缺任一整体 no-op。
+- bootcmd 变为 "run ab_boot; " RKIMG_BOOTCOMMAND,vendor 链原样保留
+  (boot 分区共享,加载路径不感知槽位)。
+- 计数安全网:bootcount 由 autoboot(0001 的 BOOTCOUNT_LIMIT)独立
+  执行;LEFT 由本补丁 ab_boot 脚本执行,两级互不依赖对方正确。
+  setexpr 结果经 env_set_hex(%lx)落盘——LEFT 值域 [0,3] 内十六进制与
+  十进制字面量相同(cmd/setexpr.c do_setexpr 已核),test = "0" 成立。
+
+板上验证门(上板验收手册 §B,板离线暂未验):printenv 八变量 +
+help setexpr;BOOT_ORDER 翻转 + upgrade_available=1 后 /proc/cmdline
+含 root=PARTUUID=<b 槽前缀> 且 rauc.slot=B。
+
+Upstream-Status: Inappropriate [board-specific OTA enablement]
+
+diff --git a/arch/arm/mach-rockchip/board.c b/arch/arm/mach-rockchip/board.c
+index 7a4124a..0997842 100644
+--- a/arch/arm/mach-rockchip/board.c
++++ b/arch/arm/mach-rockchip/board.c
+@@ -1332,6 +1332,46 @@ static void bootargs_add_dtb_dtbo(void *fdt, bool verbose)
+ 	}
+ }
+ 
++/*
++ * A/B 槽位 → bootargs(OTA 阶段 2):共享 boot 分区里的 DTB 把
++ * root=PARTUUID=…(a 槽)经 bootargs_add_dtb_dtbo 合并进 env bootargs
++ * (env_update 按 title 后到者覆盖的语义),本钩子紧随其后覆盖 root= 并
++ * 追加 rauc.slot=,内核与 RAUC 才能感知本轮实际选中的槽。
++ *
++ * 取槽顺序:BOOT_SLOT(ab_boot 脚本本轮已算好,运行时变量)→
++ * BOOT_ORDER 首项 → 兜底 A。纯 env 驱动:rootfs_a_uuid/rootfs_b_uuid
++ * 缺任一即整体 no-op——stock 镜像没有这些变量,行为零回归。
++ * 设计依据与逐字语义:docs/plans/2026-09-26-ota-phase23.md 开放项 1(c)。
++ */
++static void bootargs_add_ab_slot(bool verbose)
++{
++	char ab_args[80];
++	const char *order, *uuid;
++	char slot;
++
++	order = env_get("BOOT_SLOT");
++	if (!order || !*order) {
++		order = env_get("BOOT_ORDER");
++		if (!order || !*order)
++			order = "A";
++	}
++	slot = *order;
++
++	if (!env_get("rootfs_a_uuid") || !env_get("rootfs_b_uuid"))
++		return;
++
++	uuid = (slot == 'B') ? env_get("rootfs_b_uuid")
++			     : env_get("rootfs_a_uuid");
++	if (!uuid || !*uuid)
++		return;
++
++	snprintf(ab_args, sizeof(ab_args),
++		 "root=PARTUUID=%s rauc.slot=%c", uuid, slot);
++	env_update("bootargs", ab_args);
++	if (verbose)
++		printf("## bootargs(ab-slot): %s\n\n", ab_args);
++}
++
+ char *board_fdt_chosen_bootargs(void *fdt)
+ {
+ 	int verbose = is_hotkey(HK_CMDLINE);
+@@ -1343,6 +1383,7 @@ char *board_fdt_chosen_bootargs(void *fdt)
+ 		printf("## bootargs(u-boot): %s\n\n", env_get("bootargs"));
+ 
+ 	bootargs_add_dtb_dtbo(fdt, verbose);
++	bootargs_add_ab_slot(verbose);
+ 	bootargs_add_partition(verbose);
+ 	bootargs_add_android(verbose);
+ 	bootargs_add_fwver(verbose);
+diff --git a/configs/rk3568_defconfig b/configs/rk3568_defconfig
+index c3c8938..bc41056 100644
+--- a/configs/rk3568_defconfig
++++ b/configs/rk3568_defconfig
+@@ -33,6 +33,7 @@ CONFIG_BOOTCOUNT_ENV=y
+ CONFIG_ENV_IS_IN_MMC=y
+ CONFIG_ENV_OFFSET=0x1F8000
+ CONFIG_ENV_SIZE=0x8000
++CONFIG_HUSH_PARSER=y
+ CONFIG_SYS_CONSOLE_INFO_QUIET=y
+ # CONFIG_DISPLAY_CPUINFO is not set
+ CONFIG_ANDROID_BOOTLOADER=y
+diff --git a/include/configs/evb_rk3568.h b/include/configs/evb_rk3568.h
+index 8a2c604..ba8cb90 100644
+--- a/include/configs/evb_rk3568.h
++++ b/include/configs/evb_rk3568.h
+@@ -22,8 +22,61 @@
+ /* A/B OTA: bootlimit/altbootcmd 安全网(见 common/autoboot.c)。 */
+ #define CONFIG_BOOTCOUNT_LIMIT
+ 
++/*
++ * A/B OTA 槽位选择环境(阶段 2,RAUC 约定变量 + 选槽脚本,逐字定稿见
++ * docs/plans/2026-09-26-ota-phase23.md 开放项 1 与 Task 2,不得改写)。
++ * ab_boot 在 bootcmd 链最前执行:按 BOOT_ORDER 取首个 LEFT>0 的槽记入
++ * 运行时变量 BOOT_SLOT(不落盘语义,saveenv 会在下轮脚本开头清掉);
++ * upgrade_available=1 时对该槽 LEFT 减一并落盘(平时零写),减到 0 剔除
++ * 出 BOOT_ORDER(双槽布局下只剩另一槽);全序皆不可用兜底 A。
++ * altbootcmd 由 autoboot 的 bootcount>bootlimit 分支调用:对调 BOOT_ORDER
++ * (对被 LEFT 剪成单项的序也良定义)、复位 LEFT/bootcount 后重跑 bootcmd;
++ * upgrade_available 在此不复位——回退槽仍要过 Linux 自检才 mark-good。
++ *
++ * 槽位 → root= 前缀映射由 board.c 的 bootargs 钩子消费(同补丁);
++ * rootfs_a/b_uuid 与 wks 的 RK_ROOTDEV_UUID/RK_ROOTDEV_B_UUID 同源。
++ * 注入通道:env_default.h 没有 altbootcmd 入口(include/env_default.h
++ * 只认 CONFIG_BOOTCOMMAND/ramboot/nfsboot),EXTRA_ENV_SETTINGS 是唯一
++ * 编译期入口(rk3568_common.h 里经 RKIMG_AB_ENV 引用;本头文件在
++ * #include <configs/rk3568_common.h> 之后定义,宏惰性展开,与上方
++ * ROCKCHIP_DEVICE_SETTINGS 的覆盖同一机制)。
++ */
++#undef RKIMG_AB_ENV
++#define RKIMG_AB_ENV \
++	"ab_boot=" \
++	"if test -z \"${BOOT_ORDER}\"; then setenv BOOT_ORDER \"A B\"; fi; " \
++	"if test -z \"${BOOT_A_LEFT}\"; then setenv BOOT_A_LEFT 3; fi; " \
++	"if test -z \"${BOOT_B_LEFT}\"; then setenv BOOT_B_LEFT 3; fi; " \
++	"setenv BOOT_SLOT \"\"; " \
++	"for slot in ${BOOT_ORDER}; do " \
++		"if test \"${slot}\" = \"A\" -a \"${BOOT_A_LEFT}\" -gt 0; then setenv BOOT_SLOT \"A\"; fi; " \
++		"if test \"${slot}\" = \"B\" -a \"${BOOT_B_LEFT}\" -gt 0; then setenv BOOT_SLOT \"B\"; fi; " \
++		"if test -n \"${BOOT_SLOT}\"; then " \
++			"if test \"${upgrade_available}\" = \"1\"; then " \
++				"if test \"${BOOT_SLOT}\" = \"A\"; then setexpr BOOT_A_LEFT ${BOOT_A_LEFT} - 1; fi; " \
++				"if test \"${BOOT_SLOT}\" = \"B\"; then setexpr BOOT_B_LEFT ${BOOT_B_LEFT} - 1; fi; " \
++				"if test \"${BOOT_SLOT}\" = \"A\" -a \"${BOOT_A_LEFT}\" = \"0\"; then setenv BOOT_ORDER \"B\"; fi; " \
++				"if test \"${BOOT_SLOT}\" = \"B\" -a \"${BOOT_B_LEFT}\" = \"0\"; then setenv BOOT_ORDER \"A\"; fi; " \
++				"saveenv; " \
++			"fi; " \
++			"break; " \
++		"fi; " \
++	"done; " \
++	"if test -z \"${BOOT_SLOT}\"; then setenv BOOT_SLOT \"A\"; fi\0" \
++	"altbootcmd=" \
++	"if test \"${BOOT_ORDER}\" = \"A B\"; then setenv BOOT_ORDER \"B A\"; else setenv BOOT_ORDER \"A B\"; fi; " \
++	"setenv BOOT_A_LEFT 3; setenv BOOT_B_LEFT 3; setenv bootcount 0; " \
++	"saveenv; run bootcmd\0" \
++	"BOOT_ORDER=A B\0" \
++	"BOOT_A_LEFT=3\0" \
++	"BOOT_B_LEFT=3\0" \
++	"upgrade_available=0\0" \
++	"bootlimit=3\0" \
++	"rootfs_a_uuid=614e0000-0000\0" \
++	"rootfs_b_uuid=61500000-0000\0"
++
+ #undef CONFIG_BOOTCOMMAND
+-#define CONFIG_BOOTCOMMAND RKIMG_BOOTCOMMAND
++#define CONFIG_BOOTCOMMAND "run ab_boot; " RKIMG_BOOTCOMMAND
+ 
+ #ifdef CONFIG_USB_FUNCTION_DFU
+ #define CONFIG_SET_DFU_ALT_INFO
+diff --git a/include/configs/rk3568_common.h b/include/configs/rk3568_common.h
+index 7a9d53b..9d96102 100644
+--- a/include/configs/rk3568_common.h
++++ b/include/configs/rk3568_common.h
+@@ -85,12 +85,19 @@
+ 
+ #include <config_distro_bootcmd.h>
+ 
++/* A/B 槽位环境注入点:本树仅 evb_rk3568.h 定义 RKIMG_AB_ENV;其他板缺省
++ * 为空,EXTRA_ENV_SETTINGS 与 stock 逐字节相同,零回归。 */
++#ifndef RKIMG_AB_ENV
++#define RKIMG_AB_ENV
++#endif
++
+ #define CONFIG_EXTRA_ENV_SETTINGS \
+ 	ENV_MEM_LAYOUT_SETTINGS \
+ 	"partitions=" PARTS_RKIMG \
+ 	ROCKCHIP_DEVICE_SETTINGS \
+ 	RKIMG_DET_BOOTDEV \
+-	BOOTENV
++	BOOTENV \
++	RKIMG_AB_ENV
+ #endif
+ 
+ /* rockchip ohci host driver */

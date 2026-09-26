@@ -10,4 +10,8 @@
 # 头注释与 docs/plans/ota.md。
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-SRC_URI += "file://0001-rk3568-ota-env-mmc-bootcount.patch"
+# 顺序即应用顺序:0002 的 defconfig/头文件 hunk 以 0001 之后的树为基准生成,
+# 两者次序不能对调。
+SRC_URI += "file://0001-rk3568-ota-env-mmc-bootcount.patch \
+            file://0002-rk3568-ab-slot-boot.patch \
+"
