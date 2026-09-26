@@ -39,13 +39,6 @@ IMAGE_INSTALL:append = " lubancat-netcfg"
 # 连 AP —— 有了驱动没有它,只是多一个 wlan0 躺在那里。
 IMAGE_INSTALL:append = " kernel-module-8821cu wpa-supplicant"
 
-# BLE 终端(design 4.3):BlueZ 是 GATT/链路加密的用户态底座(整个自写层原本
-# 零引用,4.1 纸面研判的必补缺口),btterm 是板端服务本体。python3-asyncio/
-# dbus-fast/websocket-client 由 btterm 的 RDEPENDS 连带进镜像;蓝牙可用的另一半
-# (btusb 补丁/bluetooth.cfg/rtl8821c 固件)在 docs/ble-terminal/feasibility/
-# board-acceptance-checklist.md §8,属 M0 蓝牙底座,不在本包范围。
-IMAGE_INSTALL:append = " bluez5 lubancat-btterm"
-
 # 地址通了还得进得去:镜像里只有 sshd 没有任何凭据,root 密码为空而 sshd 不收
 # 空密码。塞开发机的公钥,重烧一次仍然进得去。
 IMAGE_INSTALL:append = " lubancat-ssh-authkeys lubancat-wifi"
