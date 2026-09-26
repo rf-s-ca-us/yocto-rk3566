@@ -32,6 +32,11 @@ fetch https://github.com/JeffyCN/meta-rockchip.git          meta-rockchip       
 # 官方仓在 git.yoctoproject.org,GitHub 上没有官方镜像(yoctoproject/
 # meta-virtualization 是 404,能搜到的 GitHub 副本都是第三方 fork)。
 fetch https://git.yoctoproject.org/meta-virtualization      meta-virtualization f980aefbc8b3eeafb8d144e7fdac3c3b701a4fea
+# A/B OTA(阶段 2)的第五条:RAUC 的 recipe 层,同样升级三件套流程——
+# 候选提交来自上游 scarthgap 分支 HEAD(2026-09-27 实取 git ls-remote),
+# 用独立构建目录过 bitbake -p 后才替换;该层 LAYERDEPENDS 只有 core,
+# 不引入新的 oe 层。CI 打 bundle(rauc-native)与板上 rauc 服务都从这层出。
+fetch https://github.com/rauc/meta-rauc.git                 meta-rauc           d63878f20eba7a85ecf53566e7a3377e78bb46ac
 
 echo
 echo "layer 就位。下一步:"

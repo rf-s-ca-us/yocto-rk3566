@@ -93,6 +93,7 @@ jobs:
             $ROOT/layers/meta-openembedded/meta-filesystems \\
             $ROOT/layers/meta-rockchip \\
             $ROOT/layers/meta-virtualization \\
+            $ROOT/layers/meta-rauc \\
             $ROOT/meta-lubancat \\
           "
           EOF
