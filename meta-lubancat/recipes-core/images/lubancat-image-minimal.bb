@@ -50,9 +50,12 @@ IMAGE_INSTALL:append = " libubootenv libubootenv-bin lubancat-fw-env"
 
 # A/B OTA 阶段 2:RAUC 本体(system.conf 由 lubancat-rauc-conf 提供,无
 # keyring,拍板 3)+ 板上客户端(timer 拉取/比对/流式安装 + 自检 mark-good)。
-# u-boot-fw-utils 元包满足 meta-rauc 的 boothelper RDEP,真身就是上面那行
-# 的 libubootenv-bin,见该 recipe 头注释。
-IMAGE_INSTALL:append = " rauc lubancat-rauc-conf lubancat-ota u-boot-fw-utils"
+# meta-rauc 匿名 python 会给 rauc 追加 RDEP u-boot-fw-utils(boothelper),
+# 该名字由 poky libubootenv recipe 的 RPROVIDES:${PN}-bin 闭环——上面那行的
+# libubootenv-bin 本身就是它,无需(也不可)另配同名 recipe:那样会构成双
+# provider,bitbake 在 Initialising tasks 阶段直接 ERROR(CI run
+# 36271625902 的死因,曾以元包试过)。
+IMAGE_INSTALL:append = " rauc lubancat-rauc-conf lubancat-ota"
 
 # Hermes 原生件:venv 组装 + 官方预编译供给件,各自 recipe 见 recipes-devtools /
 # recipes-extended / recipes-connectivity。hermes-agent 会经 RDEPENDS 连带拉进
