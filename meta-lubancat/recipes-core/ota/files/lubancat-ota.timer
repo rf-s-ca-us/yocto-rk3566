@@ -1,0 +1,9 @@
+[Unit]
+Description=lubancat OTA 定时检查(推 main → CI → R2 后 ≤20 分钟内升级)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

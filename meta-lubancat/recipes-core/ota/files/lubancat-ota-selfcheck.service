@@ -1,0 +1,10 @@
+[Unit]
+Description=lubancat OTA 升级后自检与 mark-good
+After=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/lubancat-ota/ota-selfcheck
+
+[Install]
+WantedBy=multi-user.target

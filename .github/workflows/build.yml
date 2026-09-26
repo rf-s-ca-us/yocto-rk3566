@@ -175,7 +175,7 @@ jobs:
           # 变量 ${VIRTUAL-RUNTIME_container_runtime},实际包名带后缀
           # (runc-opencontainers 之类)。上一轮写成 '^runc ' 就漏掉了,
           # 于是"缺 runtime"是模式的错,不是镜像的错。
-          pat='^(podman|conmon|catatonit|crun|runc|netavark|aardvark|slirp4netns|fuse-overlayfs|skopeo|iptables|containers|nsenter|kernel-module-8821cu|wpa-supplicant|lubancat-netcfg|lubancat-wifi|lubancat-ssh-authkeys|hermes-agent|hermes-python|lubancat-nodejs|ripgrep|mihomo|vscode-server|ffmpeg)'
+          pat='^(podman|conmon|catatonit|crun|runc|netavark|aardvark|slirp4netns|fuse-overlayfs|skopeo|iptables|containers|nsenter|kernel-module-8821cu|wpa-supplicant|lubancat-netcfg|lubancat-wifi|lubancat-ssh-authkeys|hermes-agent|hermes-python|lubancat-nodejs|ripgrep|mihomo|vscode-server|ffmpeg|rauc|lubancat-rauc-conf|lubancat-ota)'
           {
             echo "## 镜像内容自查"
             echo
@@ -198,6 +198,12 @@ jobs:
             grep -qE "^${pkg}[[:space:]]" "$m" || { echo "::error::manifest 缺 $pkg"; fail_hermes=1; }
           done
 
+          # OTA 三件(rauc 本体 / 系统配置 / 板上客户端)同理,缺一即红
+          fail_ota=0
+          for pkg in rauc lubancat-rauc-conf lubancat-ota; do
+            grep -qE "^${pkg}[[:space:]]" "$m" || { echo "::error::manifest 缺 $pkg"; fail_ota=1; }
+          done
+
           # 包在不在,和"运行时要的那几个文件在不在",是两件事。
           # podman 没有 /etc/containers/policy.json 会在 pull 时直接失败
           # (unable to load signature policy),而这在构建期完全看不出来。
@@ -218,8 +224,35 @@ jobs:
           else
             echo "::warning::没有 rootfs.tar.gz,跳过文件级检查"
           fi
-          # 新增的退出码只覆盖 hermes 硬门;上面的容器组仍是 warning,行为不变
-          exit $fail_hermes
+
+          # OTA 文件级断言:包在 ≠ 文件在,system.conf 的槽位设备号更要看内容
+          # (device=p3/p4 是硬编码,错号 = bundle 写进错误分区)。tar 成员前缀
+          # (./ 或裸)不猜,统一子串匹配;symlink 无内容可倒(tar xzO 对 symlink
+          # 输出 0 字节),mask 断言走 tzvf 的箭头字段。
+          if [ -n "${t:-}" ]; then
+            {
+              echo
+              echo "### OTA 关键文件"
+              echo '```'
+              tar tzf "$t" | sort | grep -E '(rauc/system.conf$|ota-version$|lubancat-ota/ota-(update|selfcheck)$|lubancat-ota(-selfcheck)?\.(service|timer)$)' || echo "(OTA 文件一个都没有)"
+              tar tzvf "$t" | grep 'rauc-mark-good.service -> /dev/null' || echo "(rauc-mark-good 未被 mask)"
+              echo '```'
+            } | tee -a $GITHUB_STEP_SUMMARY
+            f=$(tar tzf "$t" | grep 'rauc/system.conf$' | head -1) || true
+            if [ -n "$f" ]; then
+              conf_content=$(tar xzOf "$t" "$f")
+              for line_re in 'compatible=lubancat-rk3566' 'bootloader=uboot' 'device=/dev/mmcblk0p3' 'device=/dev/mmcblk0p4' 'bootname=A' 'bootname=B'; do
+                grep -q "$line_re" <<<"$conf_content" || { echo "::error::system.conf 缺 $line_re —— 槽位映射与 wks 布局脱钩"; fail_ota=1; }
+              done
+            else
+              echo "::error::rootfs 里没有 rauc/system.conf"
+              fail_ota=1
+            fi
+          fi
+          # 退出码覆盖 hermes + OTA 两个硬门;上面的容器组仍是 warning,行为不变
+          if [ "$fail_hermes" -ne 0 ] || [ "$fail_ota" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: dtb 自查
         if: always()

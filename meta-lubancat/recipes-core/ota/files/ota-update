@@ -1,0 +1,88 @@
+#!/bin/sh
+# lubancat OTA 客户端 —— timer 触发:拉 latest.json → 比版本 → rauc install 流式写非活动槽
+#
+# 契约(2026-09-26-ota-phase23.md Task 3,2026-09-27 评审修订时序):
+#   curl 拉 $OTA_BASE_URL/ota/$OTA_CHANNEL/latest.json
+#   → 与 /etc/ota-version 只比 run_number 整数前缀,远端 > 本地 才装
+#     (等于 = 幂等跳过;小于 = 跳过 + 日志,防 R2 被回写旧版造成循环降级)
+#   → rauc install <url>(流式,不先落盘)
+#   → install 成功后才同批写 env:bootcount=0 + upgrade_available=1,然后 reboot
+#   → BOOT_ORDER 不动(RAUC set_primary 在 install 时已把目标槽排到 BOOT_ORDER 首位)
+#   失败路径只写日志,env 一个变量都不碰:install 失败若留下 bootcount=0,
+#   下次真实升级的计数起点就被污染;若留下旧值(上次中止测试残余 3),重启会
+#   立即误触发 altbootcmd。成功与置位之间的毫秒级掉电窗口是已知缺口
+#   (计划「已知缺口」),单板记录不设防。
+#
+# 日志落 data 分区(/var/lib/containers/ota),跨槽位与重启原地存活。
+
+LOG_DIR="/var/lib/containers/ota"
+LOG_FILE="$LOG_DIR/update.log"
+VERSION_FILE="/etc/ota-version"
+LATEST_JSON="/tmp/ota-latest.json"
+
+# 构建期由 recipe sed 注入(lubancat-ota_1.0.bb 的 OTA_BASE_URL/OTA_CHANNEL)
+OTA_BASE_URL="@OTA_BASE_URL@"
+OTA_CHANNEL="@OTA_CHANNEL@"
+
+log() {
+	mkdir -p "$LOG_DIR" 2>/dev/null
+	echo "$(date '+%F %T') $*" >> "$LOG_FILE"
+	echo "$*"
+}
+
+# latest.json 无 jq 可用,sed 截字符串字段:{"version":"..","url":"..","sha256":".."}
+json_str() {
+	sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LATEST_JSON"
+}
+
+# 版本串 <run_number>-<sha8>;取整数前缀,非数字(含空)一律 0
+run_number_of() {
+	rn=${1%%-*}
+	case "$rn" in
+		'' | *[!0-9]*) echo 0 ;;
+		*) echo "$rn" ;;
+	esac
+}
+
+main() {
+	mkdir -p "$LOG_DIR" 2>/dev/null
+
+	if ! curl -fsS --max-time 30 "$OTA_BASE_URL/ota/$OTA_CHANNEL/latest.json" -o "$LATEST_JSON"; then
+		log "拉取 latest.json 失败(离线或远端未就绪),本轮跳过"
+		rm -f "$LATEST_JSON"
+		return 0
+	fi
+
+	remote_version=$(json_str version)
+	remote_url=$(json_str url)
+	if [ -z "$remote_version" ] || [ -z "$remote_url" ]; then
+		log "latest.json 缺 version/url 字段或格式不符,跳过"
+		return 0
+	fi
+
+	local_version=$(cat "$VERSION_FILE" 2>/dev/null)
+	remote_run=$(run_number_of "$remote_version")
+	local_run=$(run_number_of "$local_version")
+
+	if [ "$remote_run" -eq "$local_run" ]; then
+		log "已是最新($local_version == $remote_version),幂等跳过"
+		return 0
+	fi
+	if [ "$remote_run" -lt "$local_run" ]; then
+		log "远端($remote_version)比本地($local_version)旧,跳过(防回写旧版循环降级)"
+		return 0
+	fi
+
+	log "发现新版本 $local_version -> $remote_version,流式安装 $remote_url"
+	if ! rauc install "$remote_url"; then
+		log "rauc install 失败,env 保持原样(不写任何槽位变量)"
+		return 1
+	fi
+
+	log "安装成功,置位升级标记(bootcount=0, upgrade_available=1)并重启"
+	fw_setenv bootcount 0 || { log "fw_setenv bootcount 失败,不重启,待下轮重试"; return 1; }
+	fw_setenv upgrade_available 1 || { log "fw_setenv upgrade_available 失败,不重启,待下轮重试"; return 1; }
+	systemctl reboot
+}
+
+main "$@"

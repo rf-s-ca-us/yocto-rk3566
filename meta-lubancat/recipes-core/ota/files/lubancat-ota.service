@@ -1,0 +1,8 @@
+[Unit]
+Description=lubancat OTA 检查与安装(由 lubancat-ota.timer 触发)
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/lubancat-ota/ota-update

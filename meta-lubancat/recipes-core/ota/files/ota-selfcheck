@@ -1,0 +1,100 @@
+#!/bin/sh
+# lubancat OTA 升级后自检与 mark-good —— 开机自启,平时零动作
+#
+# 契约(2026-09-26-ota-phase23.md Task 3 + 开放项 3 写死):
+#   fw_printenv upgrade_available 非 1 → 静默退出(正常启动零动作);
+#   =1 → 五项自检(每项失败等 30s 重试,最多 3 次,合计 ≤90s 重试窗,
+#   专治 NTP 未同步与路由器抖动):
+#     1. 有线 end1 链路;2. 出网(ping 223.5.5.5);3. DNS(ping www.baidu.com);
+#     4. NTP 已同步(timedatectl);5. podman 容器存储可用(overlay)。
+#   不含无线与容器拉镜像项:拍板 1(新槽无凭据,无线必败会把成功升级全回滚)
+#   + OTA 只换 rootfs,内核/DTB 在共享 boot 分区不随槽切换,容器内核能力
+#   不可能因 OTA 退化,每次开机拉真镜像又重又脏 data 分区。
+#   全过 → rauc status mark-good + fw_setenv upgrade_available 0 + 日志;
+#   有死项 → 日志落 data 分区 → systemctl reboot,不做任何 env 写动作——
+#   跨启动兜底交给 u-boot 两级独立安全网(bootcount→altbootcmd 由 autoboot
+#   C 代码执行;BOOT_x_LEFT 淘汰由 bootcmd 里的 ab_boot 脚本执行)。
+
+LOG_DIR="/var/lib/containers/ota"
+LOG_FILE="$LOG_DIR/selfcheck.log"
+RETRY_WAIT=30
+RETRY_MAX=3
+
+log() {
+	mkdir -p "$LOG_DIR" 2>/dev/null
+	echo "$(date '+%F %T') $*" >> "$LOG_FILE"
+	echo "$*"
+}
+
+upgrade_pending() {
+	fw_printenv upgrade_available 2>/dev/null | grep -q '^upgrade_available=1$'
+}
+
+check_link() {
+	[ -e /sys/class/net/end1 ] || return 1
+	[ "$(cat /sys/class/net/end1/operstate 2>/dev/null)" != "down" ]
+}
+
+check_inet() {
+	ping -c2 -W3 223.5.5.5 >/dev/null 2>&1
+}
+
+check_dns() {
+	ping -c2 -W3 www.baidu.com >/dev/null 2>&1
+}
+
+check_ntp() {
+	timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes
+}
+
+check_container() {
+	podman info 2>/dev/null | grep -q overlay
+}
+
+# 单项重试窗:失败等 RETRY_WAIT 秒再试,至多 RETRY_MAX 次,窗口耗尽判死
+check_run() {
+	name=$1
+	shift
+	attempt=1
+	while [ "$attempt" -le "$RETRY_MAX" ]; do
+		if "$@"; then
+			log "自检 [$name] 通过(第 $attempt 次)"
+			return 0
+		fi
+		if [ "$attempt" -lt "$RETRY_MAX" ]; then
+			log "自检 [$name] 第 $attempt 次失败,${RETRY_WAIT}s 后重试"
+			sleep "$RETRY_WAIT"
+		fi
+		attempt=$((attempt + 1))
+	done
+	return 1
+}
+
+die() {
+	log "自检死项 [$1](重试窗耗尽),重启——回退交给 u-boot 安全网,本脚本不碰 env"
+	# reboot 是异步的:必须立刻退出本进程,不然后面的检查项还有机会跑到
+	# mark-good,把死项的回退裁决覆盖掉(仿真实测抓过这个洞)
+	systemctl reboot
+	exit 1
+}
+
+main() {
+	upgrade_pending || exit 0
+
+	log "upgrade_available=1,开始升级后自检(五项,重试窗 ${RETRY_WAIT}s x${RETRY_MAX})"
+
+	check_run "有线 end1" check_link || die "有线 end1"
+	check_run "出网" check_inet || die "出网"
+	check_run "DNS" check_dns || die "DNS"
+	check_run "NTP" check_ntp || die "NTP"
+	check_run "容器存储" check_container || die "容器存储"
+
+	if rauc status mark-good && fw_setenv upgrade_available 0; then
+		log "自检全过,mark-good 完成,升级收敛"
+	else
+		log "mark-good / fw_setenv 复位失败(异常),不重启,LEFT 计数交给 u-boot 兜底"
+		return 1
+	fi
+}
+
+main "$@"
