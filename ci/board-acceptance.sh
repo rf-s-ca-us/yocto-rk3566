@@ -53,6 +53,34 @@ check "拉镜像"              "podman pull -q $IMG"
 check "跑容器(默认网络)"   "podman run --rm $IMG true"
 check "容器出网"            "podman run --rm $IMG ping -c2 -W3 223.5.5.5"
 
+# ---- OTA 只读三例(2026-09-26-ota-phase23.md Task 7):不触发安装、不写
+# 任何槽位状态。拉真 bundle、跑升级、断电回退属上板手册 §C 的人验项,
+# 不在这里做;这里只验"分发链与客户端的本体在位、可读"。
+OTA_BASE_URL=${OTA_BASE_URL:-https://pub-b68514853b324ecaa66d426bae01a369.r2.dev}
+
+# ① 分发链匿名可达且 version 字段可解析。板上没装 jq(镜像无此包,ota-update
+#    的 json_str 同款 sed 截字段),不为解析引入新依赖。
+check "OTA latest.json 匿名可达且 version 可解析" \
+	"curl -fsS --max-time 15 '$OTA_BASE_URL/ota/stable/latest.json' | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' | grep -q ."
+
+# ② RAUC 客户端本体在位且能读槽位(status 是只读子命令)
+check "rauc 已装且能读状态" 'command -v rauc && rauc status'
+
+# ③ 槽位变量与本地/远端版本并列打印,供人核对。自动断言只到"非空/可读":
+#    本地与远端版本是否一致取决于升级是否已发生,只读用例判不了 —— 那个
+#    对账是上板手册 §C1 的实机门,这里把三行证据摆在一起省得人拼。
+if $SSH 'fw_printenv BOOT_ORDER' >/tmp/ba-bootorder 2>&1 && [ -s /tmp/ba-bootorder ]; then
+	printf '  ok   %s\n' "BOOT_ORDER 非空"
+	pass=$((pass + 1))
+	printf '       | %-10s: %s\n' "BOOT_ORDER" "$(cat /tmp/ba-bootorder)"
+	printf '       | %-10s: %s\n' "本地版本" "$($SSH 'cat /etc/ota-version' 2>/dev/null || true) (/etc/ota-version)"
+	printf '       | %-10s: %s\n' "远端版本" "$($SSH "curl -fsS --max-time 15 '$OTA_BASE_URL/ota/stable/latest.json'" 2>/dev/null | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p') (latest.json)"
+else
+	printf '  FAIL %s\n' "BOOT_ORDER 非空"
+	sed 's/^/       | /' /tmp/ba-bootorder
+	fail=$((fail + 1))
+fi
+
 echo
 echo "通过 $pass,失败 $fail"
 [ $fail -eq 0 ]
