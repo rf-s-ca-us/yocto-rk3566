@@ -13,6 +13,10 @@ SRC_URI += "file://rk3566-lubancat-1io.dts"
 # 同因(这个产品要跑容器),换块板子照样要。暂放这里是因为三层现在挤在同一个
 # layer 里;等 BSP / distro 分开,它跟 virtualization 一起走。
 SRC_URI += "file://container.cfg"
+# OTA 要的内核项(rauc verity bundle 板上安装前置,依赖链与事实链见
+# ota.cfg 头注释)。kconfig 对依赖不满足的项静默丢弃,CI「内核配置自查」
+# 已把 ota.cfg 纳入符号断言,缺项即红。
+SRC_URI += "file://ota.cfg"
 
 # 放在 do_configure 之前:此时 ${S} 已经解包好,而内核尚未开始配置/编译。
 do_configure:prepend() {

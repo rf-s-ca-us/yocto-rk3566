@@ -307,8 +307,11 @@ jobs:
           # 照样出片,跑起来才发现容器起不来。所以断言问最终的 .config,
           # 不问 fragment:fragment 写了什么不是这里要回答的问题。
           #
-          # 期望清单直接从 container.cfg 里生成,不另抄一份 —— 抄一份就会漂。
-          frag=meta-lubancat/recipes-kernel/linux/files/container.cfg
+          # 期望清单直接从 fragment 里生成,不另抄一份 —— 抄一份就会漂。
+          # container.cfg(容器)+ ota.cfg(dm-verity,RAUC verity bundle
+          # 板上安装前置)两份 fragment 同一断言:kconfig 对满足不了
+          # depends 的项静默丢弃,哪个 fragment 丢了都一样致命。
+          frags="meta-lubancat/recipes-kernel/linux/files/container.cfg meta-lubancat/recipes-kernel/linux/files/ota.cfg"
           cfg=$(find build/tmp/work -path '*linux-rockchip*standard-build/.config' | head -1) || true
           if [ -z "${cfg:-}" ]; then
             if [ "${{ steps.bitbake.outputs.code }}" = "0" ]; then
@@ -331,14 +334,18 @@ jobs:
 
           fail=0
           miss=""
-          for sym in $(sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=y.*/\1/p' "$frag"); do
-            grep -q "^$sym=y$" "$cfg" || { miss="$miss $sym"; fail=1; }
+          expected=0
+          for frag in $frags; do
+            expected=$((expected + $(grep -c '^CONFIG_.*=y' "$frag")))
+            for sym in $(sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=y.*/\1/p' "$frag"); do
+              grep -q "^$sym=y$" "$cfg" || { miss="$miss $sym"; fail=1; }
+            done
           done
           [ -n "$miss" ] && echo "::error::这些项没进最终 .config(多半是 depends on 没满足):$miss"
           {
             echo "### 内核配置自查"
             if [ $fail -eq 0 ]; then
-              echo "container.cfg 里 $(grep -c '^CONFIG_.*=y' "$frag") 项全部落进 .config。"
+              echo "container.cfg + ota.cfg 共 $expected 项全部落进 .config。"
             else
               echo '```'
               echo "缺:$miss"
