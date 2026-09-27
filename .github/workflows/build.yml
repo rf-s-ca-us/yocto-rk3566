@@ -113,6 +113,26 @@ jobs:
             echo 'BB_HASHSERVE = ""'
             echo 'BB_SIGNATURE_HANDLER = "OEBasicHash"'
           } >> conf/local.conf
+          # OTA 版本串(plans/2026-09-26-ota-phase23.md 开放项 3):
+          # <run_number>-<sha8>,这里算一次、三处同源 —— local.conf(经
+          # lubancat-ota 落成镜像的 /etc/ota-version)、bundle 的 manifest
+          # version、R2 的 latest.json。run_number 单调递增,板上客户端只比
+          # 整数前缀,更新才装。
+          # 不能 export:导出变量会进所有 shell task 的 hash(data.py
+          # generate_dependencies 把 exportlist 算进每个 task),一变全线
+          # sstate 失配。普通赋值只影响引用它的 recipe 的 hash —— 即
+          # lubancat-ota(写 /etc/ota-version)及其下游 do_rootfs,
+          # 分轮种 sstate 的架构不受扰动(2026-09-27 对钉定 bitbake
+          # siggen.py/data.py 实读确认)。
+          OTA_VERSION="${{ github.run_number }}-$(git rev-parse --short=8 HEAD)"
+          echo "OTA_VERSION = \"$OTA_VERSION\"" >> conf/local.conf
+          # bundle step 必须用同一个值,走 GITHUB_ENV 传,不重算 —— 重算就有两处真源
+          echo "OTA_VERSION=$OTA_VERSION" >> "$GITHUB_ENV"
+          # OTA bundle 打包在主构建之后要用 oe-run-native 调 rauc-native 的
+          # rauc 与 mksquashfs;rm_work 默认把 WORKDIR(含 recipe-sysroot-native)
+          # 掀掉,oe-run-native 就找不到工具了。这两个 native 不进镜像,留住
+          # 工作目录只费百来 MB 磁盘(rm_work.bbclass 按 PN 匹配 RM_WORK_EXCLUDE)。
+          echo 'RM_WORK_EXCLUDE += "rauc-native squashfs-tools-native"' >> conf/local.conf
           # Wi-Fi 凭据只从 secret 来,不进仓。默认不设:**这个仓是公开的,
           # 公开仓的 Actions artifact 谁都能下载**,把口令编进镜像等于连同
           # 镜像一起公开发布。真要烧进镜像,先把仓转私有,再配这两个 secret。
@@ -428,6 +448,141 @@ jobs:
           path: out/
           if-no-files-found: warn
           retention-days: 14
+
+      # OTA 分发链(plans/2026-09-26-ota-phase23.md Task 5):本轮 rootfs 打成
+      # rauc bundle 推 R2 stable 渠道。latest.json 是"版本指针",必须最后写
+      # —— 先有 bundle 再切指针,板上读到新指针就一定拉得到 bundle。
+      # 产物放 build/ota-bundle/(不进 out/):artifact 已含内嵌两份 rootfs 的
+      # wic,bundle 又是一份 rootfs 量级,再塞进去只烧存储和上传时间。
+      # if: success():自查红的轮(镜像内容/内核配置/dtb 任一)不许发渠道 ——
+      # 板上会自动装 latest.json 指的东西,红轮发布等于给板子喂未验产物;
+      # 墙钟到点(code=124,job 仍 success)由下面 code 判断跳过。
+      - name: 打 rauc bundle 并推 R2 stable 渠道
+        if: success()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          SSTATE_BASE_URL: ${{ vars.SSTATE_BASE_URL }}
+        run: |
+          code="${{ steps.bitbake.outputs.code }}"
+          if [ "$code" != "0" ]; then
+            echo "::warning::bitbake exit $code,本轮没有完整 rootfs,跳过 OTA bundle"
+            exit 0
+          fi
+          # 凭据判断放 shell 里不放 if:(步骤级 env 在自己的 if 表达式里
+          # 取不到,同「推 sstate」步);fork/PR 拿不到 secret,不该因此变红
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${SSTATE_BASE_URL:-}" ]; then
+            echo "::warning::R2 凭据或 vars.SSTATE_BASE_URL 未配置,跳过 OTA bundle"
+            exit 0
+          fi
+          [ -n "${OTA_VERSION:-}" ] || { echo "::error::OTA_VERSION 为空,生成构建配置步没注入"; exit 1; }
+
+          d=build/tmp/deploy/images/$MACHINE
+          rootfs=$(ls -1 "$d"/*.rootfs.ext4 2>/dev/null | head -1) || true
+          if [ -z "${rootfs:-}" ]; then
+            echo "::error::bitbake 成功却找不到 rootfs.ext4,bundle 无从打起"
+            exit 1
+          fi
+          ep="${{ secrets.R2_ENDPOINT }}"
+          bucket="${{ vars.R2_BUCKET }}"
+
+          # rauc 打 bundle 要调外部 mksquashfs(bundle.c create_bundle),
+          # squashfs-tools-native 已由 rauc-native 的 bbappend 提为 DEPENDS
+          # (meta-rauc 只放 RRECOMMENDS,不进 recipe-sysroot-native);
+          # rm_work 对这两个 native 的豁免在「生成构建配置」步写进 local.conf。
+          export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+          . layers/poky/oe-init-build-env build >/dev/null
+          timeout 20m bitbake rauc-native squashfs-tools-native
+
+          WS=$GITHUB_WORKSPACE
+          mkdir -p "$WS/build/ota-bundle/in" "$WS/build/ota-bundle/out"
+          cp -L "$WS/$rootfs" "$WS/build/ota-bundle/in/rootfs.ext4"
+          {
+            echo "[update]"
+            echo "compatible=lubancat-rk3566"
+            echo "version=$OTA_VERSION"
+            echo ""
+            echo "[bundle]"
+            # verity 是流式安装(install <https URL>)唯一支持的格式:
+            # plain 在 check_bundle 的流式分支直接被拒(bundle.c)
+            echo "format=verity"
+            echo ""
+            echo "[image.rootfs]"
+            echo "filename=rootfs.ext4"
+          } > "$WS/build/ota-bundle/in/manifest.raucm"
+
+          # 一次性自签证书:rauc bundle 形式上要求 cert+key(main.c
+          # bundle_start "Cert and key files must be provided"),板上无
+          # keyring 根本不验(bundle.c,system.conf 无 [keyring] 段)。
+          # 当场生成当场用,不进 artifact 不进缓存 —— 信任根仍是 R2 写
+          # 权限(拍板 3),仓里没有新增秘密。
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj "/CN=ota-ephemeral-$GITHUB_RUN_ID" \
+            -keyout "$WS/build/ota-bundle/ephemeral.key" \
+            -out "$WS/build/ota-bundle/ephemeral.crt" 2>/dev/null
+
+          oe-run-native rauc-native rauc \
+            --cert "$WS/build/ota-bundle/ephemeral.crt" \
+            --key "$WS/build/ota-bundle/ephemeral.key" \
+            bundle "$WS/build/ota-bundle/in" "$WS/build/ota-bundle/out/update.raucb"
+
+          # host 门①:bundle 内容断言。info 默认 readable 输出,值带单引号
+          # (main.c info_formatter_readable 的 Compatible:/Version: 格式),
+          # grep 按真实格式锚定,不猜小写无引号形态。
+          info=$(oe-run-native rauc-native rauc info --no-verify \
+            "$WS/build/ota-bundle/out/update.raucb")
+          echo "$info" | grep -Eq "^Compatible:[[:space:]]*'lubancat-rk3566'$" \
+            || { echo "::error::bundle compatible 断言失败"; echo "$info"; exit 1; }
+          echo "$info" | grep -Eq "^Version:[[:space:]]*'$OTA_VERSION'$" \
+            || { echo "::error::bundle version 断言失败(期望 $OTA_VERSION)"; echo "$info"; exit 1; }
+
+          cd "$WS"
+          # host 门②:latest.json 的 sha256 与 bundle 实际哈希一致(序列化
+          # 往返自证,防 jq/写文件环节悄悄坏掉)
+          sha=$(sha256sum build/ota-bundle/out/update.raucb | cut -d' ' -f1)
+          jq -n --arg v "$OTA_VERSION" \
+                --arg u "$SSTATE_BASE_URL/ota/stable/$OTA_VERSION/update.raucb" \
+                --arg s "$sha" \
+                '{version:$v,url:$u,sha256:$s}' > build/ota-bundle/out/latest.json
+          [ "$(jq -r .sha256 build/ota-bundle/out/latest.json)" = "$sha" ] \
+            || { echo "::error::latest.json 的 sha256 与 bundle 不一致"; exit 1; }
+
+          aws s3 cp build/ota-bundle/out/update.raucb \
+            "s3://$bucket/ota/stable/$OTA_VERSION/update.raucb" \
+            --endpoint-url "$ep" --only-show-errors
+          # 指针最后写:S3 单对象 PUT 原子,读侧要么旧指针要么新指针
+          aws s3 cp build/ota-bundle/out/latest.json \
+            "s3://$bucket/ota/stable/latest.json" \
+            --endpoint-url "$ep" --only-show-errors --content-type application/json
+
+          # host 门③:匿名读回环 —— 板上 OTA 客户端拉 latest.json 走的就是
+          # 这条无凭据 GET,发布完当场验一遍
+          got=$(curl -fsS --retry 4 --retry-delay 3 "$SSTATE_BASE_URL/ota/stable/latest.json" | jq -r .version)
+          [ "$got" = "$OTA_VERSION" ] \
+            || { echo "::error::匿名读回环不符:latest.json version=$got,期望 $OTA_VERSION"; exit 1; }
+
+          # 保留最近 3 个版本目录(run_number 数值序,含本轮);更旧的整目录
+          # 清掉。latest.json 在 ota/stable/ 顶层,不在任何版本目录里,不受影响
+          versions=$(aws s3 ls "s3://$bucket/ota/stable/" --endpoint-url "$ep" --delimiter "/" \
+            | awk '$1 == "PRE" {print $2}' | sed 's:/$::' | grep -E '^[0-9]+-[0-9a-f]{8}$' | sort -t- -k1,1n)
+          total=$(printf '%s\n' "$versions" | grep -c . || true)
+          if [ "${total:-0}" -gt 3 ]; then
+            printf '%s\n' "$versions" | head -n $((total - 3)) | while read -r old; do
+              echo "清理旧版本目录:$old"
+              aws s3 rm "s3://$bucket/ota/stable/$old/" --recursive \
+                --endpoint-url "$ep" --only-show-errors
+            done
+          fi
+
+          {
+            echo "## OTA stable 渠道"
+            echo
+            echo "- 版本:\`$OTA_VERSION\`"
+            echo "- bundle:ota/stable/$OTA_VERSION/update.raucb($(du -h build/ota-bundle/out/update.raucb | cut -f1))"
+            echo "- latest.json:version/url/sha256 三字段,匿名读回环 ✓"
+            echo "- 版本目录数:$total(保留最近 3 个)"
+          } >> $GITHUB_STEP_SUMMARY
 
       - name: 汇总
         if: always()
