@@ -495,17 +495,19 @@ jobs:
           . layers/poky/oe-init-build-env build >/dev/null
           timeout 20m bitbake rauc-native squashfs-tools-native
 
-          # 不走 oe-run-native:rauc 本体在 do_populate_sysroot 的产物目录
-          # (sysroot-destdir),recipe-sysroot-native 里只有 DEPENDS 阶过去的
-          # 依赖(mksquashfs 在这里)。oe-run-native 只查后者,而它报错提示的
+          # 不走 oe-run-native:rauc 本体不在 recipe-sysroot-native(那里只有
+          # DEPENDS 阶过去的依赖,mksquashfs 在这里),而在 rauc-native 自己的
+          # populate_sysroot 产物里。它报错提示的
           # "bitbake rauc-native -caddto_recipe_sysroot" 补救已不可用——
           # addto_recipe_sysroot 机制上游已整体移除(scarthgap 全树实测无此
-          # task,run 36286735469 之鉴)。直接把两个目录挂进 PATH;RM_WORK_
-          # EXCLUDE 保证它们在本步存活。
-          rauc_bin=$(bitbake-getvar -r rauc-native --value SYSROOT_DESTDIR)/usr/bin
+          # task,run 36286735469 之鉴)。native 的产物树按绝对 sysroot 路径
+          # 嵌套(native.bbclass:97 sstate-inputdirs 带 ${STAGING_DIR_NATIVE}),
+          # 具体层级不再猜——在保活的 WORKDIR 里直接找(rm_work 豁免保证存活)。
+          rwork=$(bitbake-getvar -r rauc-native --value WORKDIR)
           rsys=$(bitbake-getvar -r rauc-native --value RECIPE_SYSROOT_NATIVE)
-          [ -x "$rauc_bin/rauc" ] || { echo "::error::rauc 不在 $rauc_bin,rm_work 豁免或 bbappend 失效"; exit 1; }
-          export PATH="$rauc_bin:$rsys/usr/bin:$PATH"
+          rauc_path=$(find "$rwork" -type f -name rauc -path '*usr/bin/rauc' 2>/dev/null | head -1)
+          [ -x "$rauc_path" ] || { echo "::error::rauc-native WORKDIR 里找不到 rauc,rm_work 豁免失效?"; exit 1; }
+          export PATH="$(dirname "$rauc_path"):$rsys/usr/bin:$PATH"
           export LD_LIBRARY_PATH="$rsys/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           WS=$GITHUB_WORKSPACE
