@@ -578,11 +578,15 @@ jobs:
             || { echo "::error::匿名读回环不符:latest.json version=$got,期望 $OTA_VERSION"; exit 1; }
 
           # 保留最近 3 个版本目录(run_number 数值序,含本轮);更旧的整目录
-          # 清掉。latest.json 在 ota/stable/ 顶层,不在任何版本目录里,不受影响
-          versions=$(aws s3 ls "s3://$bucket/ota/stable/" --endpoint-url "$ep" --delimiter "/" \
+          # 清掉。latest.json 在 ota/stable/ 顶层,不在任何版本目录里,不受影响。
+          # 不加 --delimiter:s3 ls 高层命令不认它(run 36292748235 实测
+          # ParamValidation,且错误被管道吞掉)——裸 ls 本来就吐 PRE 行。
+          # 刚传完本轮版本目录,枚举必非空;空 = 枚举坏了,红,不静默。
+          versions=$(aws s3 ls "s3://$bucket/ota/stable/" --endpoint-url "$ep" \
             | awk '$1 == "PRE" {print $2}' | sed 's:/$::' | grep -E '^[0-9]+-[0-9a-f]{8}$' | sort -t- -k1,1n)
           total=$(printf '%s\n' "$versions" | grep -c . || true)
-          if [ "${total:-0}" -gt 3 ]; then
+          [ "${total:-0}" -ge 1 ] || { echo "::error::ota/stable/ 版本目录枚举为空,retention 逻辑失效"; exit 1; }
+          if [ "$total" -gt 3 ]; then
             printf '%s\n' "$versions" | head -n $((total - 3)) | while read -r old; do
               echo "清理旧版本目录:$old"
               aws s3 rm "s3://$bucket/ota/stable/$old/" --recursive \
