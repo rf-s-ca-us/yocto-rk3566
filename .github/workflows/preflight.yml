@@ -57,11 +57,38 @@ jobs:
             exit 1
           fi
           echo "✓ 匿名读通过"
+          echo "- \`preflight/\` 探针:写入 ✓ 匿名读 ✓" >> $GITHUB_STEP_SUMMARY
+
+      # OTA 分发链(2026-09-26-ota-phase23.md Task 6)用 ota/ 前缀:板上
+      # 客户端拉 latest.json、CI 推 update.raucb 都在这里。公开读是桶级
+      # 配置,这条探针防的是公开读配置被改动后 ota/ 前缀跟着哑掉的回归
+      # —— sstate 通了不代表 ota/ 通,两个前缀分别验。
+      - name: ota/ 前缀能写入
+        run: |
+          echo "ota-$GITHUB_RUN_ID" > ota-probe.txt
+          aws s3 cp ota-probe.txt "s3://$R2_BUCKET/ota/probe.txt" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors
+
+      - name: ota/ 前缀匿名可读 —— 板上拉 latest.json 走的同一条路
+        run: |
+          url="$SSTATE_BASE_URL/ota/probe.txt"
+          if ! got=$(curl -fsS --retry 4 --retry-delay 3 "$url"); then
+            echo "::error::ota/ 匿名读失败 —— bucket 公开读没有覆盖 ota/ 前缀"
+            exit 1
+          fi
+          if [ "$got" != "ota-$GITHUB_RUN_ID" ]; then
+            echo "::error::ota/ 读到的内容不对,SSTATE_BASE_URL 可能指向了别的 bucket"
+            exit 1
+          fi
+          echo "✓ ota/ 匿名读通过"
+          echo "- \`ota/\` 探针:写入 ✓ 匿名读 ✓(板上 OTA 客户端同款路径)" >> $GITHUB_STEP_SUMMARY
 
       - name: 清理探针
         if: always()
         run: |
           aws s3 rm "s3://$R2_BUCKET/preflight/probe.txt" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors || true
+          aws s3 rm "s3://$R2_BUCKET/ota/probe.txt" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors || true
 
       - name: 汇总
@@ -72,4 +99,5 @@ jobs:
             echo
             echo "上传通道(S3 API + 凭据)与下载通道(匿名 HTTPS)分别验过。"
             echo "两条都绿才代表 \`SSTATE_MIRRORS\` 能用。"
+            echo "ota/ 探针同口径验过 —— 那是板上 OTA 客户端拉 latest.json 的前缀。"
           } >> $GITHUB_STEP_SUMMARY
