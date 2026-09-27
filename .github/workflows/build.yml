@@ -495,6 +495,19 @@ jobs:
           . layers/poky/oe-init-build-env build >/dev/null
           timeout 20m bitbake rauc-native squashfs-tools-native
 
+          # 不走 oe-run-native:rauc 本体在 do_populate_sysroot 的产物目录
+          # (sysroot-destdir),recipe-sysroot-native 里只有 DEPENDS 阶过去的
+          # 依赖(mksquashfs 在这里)。oe-run-native 只查后者,而它报错提示的
+          # "bitbake rauc-native -caddto_recipe_sysroot" 补救已不可用——
+          # addto_recipe_sysroot 机制上游已整体移除(scarthgap 全树实测无此
+          # task,run 36286735469 之鉴)。直接把两个目录挂进 PATH;RM_WORK_
+          # EXCLUDE 保证它们在本步存活。
+          rauc_bin=$(bitbake-getvar -r rauc-native --value SYSROOT_DESTDIR)/usr/bin
+          rsys=$(bitbake-getvar -r rauc-native --value RECIPE_SYSROOT_NATIVE)
+          [ -x "$rauc_bin/rauc" ] || { echo "::error::rauc 不在 $rauc_bin,rm_work 豁免或 bbappend 失效"; exit 1; }
+          export PATH="$rauc_bin:$rsys/usr/bin:$PATH"
+          export LD_LIBRARY_PATH="$rsys/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
           WS=$GITHUB_WORKSPACE
           mkdir -p "$WS/build/ota-bundle/in" "$WS/build/ota-bundle/out"
           cp -L "$WS/$rootfs" "$WS/build/ota-bundle/in/rootfs.ext4"
@@ -522,7 +535,7 @@ jobs:
             -keyout "$WS/build/ota-bundle/ephemeral.key" \
             -out "$WS/build/ota-bundle/ephemeral.crt" 2>/dev/null
 
-          oe-run-native rauc-native rauc \
+          rauc \
             --cert "$WS/build/ota-bundle/ephemeral.crt" \
             --key "$WS/build/ota-bundle/ephemeral.key" \
             bundle "$WS/build/ota-bundle/in" "$WS/build/ota-bundle/out/update.raucb"
@@ -530,7 +543,7 @@ jobs:
           # host 门①:bundle 内容断言。info 默认 readable 输出,值带单引号
           # (main.c info_formatter_readable 的 Compatible:/Version: 格式),
           # grep 按真实格式锚定,不猜小写无引号形态。
-          info=$(oe-run-native rauc-native rauc info --no-verify \
+          info=$(rauc info --no-verify \
             "$WS/build/ota-bundle/out/update.raucb")
           echo "$info" | grep -Eq "^Compatible:[[:space:]]*'lubancat-rk3566'$" \
             || { echo "::error::bundle compatible 断言失败"; echo "$info"; exit 1; }
