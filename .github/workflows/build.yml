@@ -128,10 +128,12 @@ jobs:
           echo "OTA_VERSION = \"$OTA_VERSION\"" >> conf/local.conf
           # bundle step 必须用同一个值,走 GITHUB_ENV 传,不重算 —— 重算就有两处真源
           echo "OTA_VERSION=$OTA_VERSION" >> "$GITHUB_ENV"
-          # OTA bundle 打包在主构建之后要用 oe-run-native 调 rauc-native 的
-          # rauc 与 mksquashfs;rm_work 默认把 WORKDIR(含 recipe-sysroot-native)
-          # 掀掉,oe-run-native 就找不到工具了。这两个 native 不进镜像,留住
-          # 工作目录只费百来 MB 磁盘(rm_work.bbclass 按 PN 匹配 RM_WORK_EXCLUDE)。
+          # OTA bundle 打包在主构建之后直接用 rauc-native 的 rauc 与
+          # squashfs-tools-native 的 mksquashfs(不走 oe-run-native:rauc 本体
+          # 在 populate_sysroot 产物里,定位方式见 bundle 步)。rm_work 默认把
+          # 两个 native 的 WORKDIR 掀掉,产物就无从找起了。这两个 native 不进
+          # 镜像,留住工作目录只费百来 MB 磁盘(rm_work.bbclass 按 PN 匹配
+          # RM_WORK_EXCLUDE)。
           echo 'RM_WORK_EXCLUDE += "rauc-native squashfs-tools-native"' >> conf/local.conf
           # Wi-Fi 凭据只从 secret 来,不进仓。默认不设:**这个仓是公开的,
           # 公开仓的 Actions artifact 谁都能下载**,把口令编进镜像等于连同
@@ -246,7 +248,8 @@ jobs:
           fi
 
           # OTA 文件级断言:包在 ≠ 文件在,system.conf 的槽位设备号更要看内容
-          # (device=p3/p4 是硬编码,错号 = bundle 写进错误分区)。tar 成员前缀
+          # (device=p3/p4 是硬编码,错号 = bundle 写进错误分区——分区号与实建
+          # wic 的对账在下面的「wic 分区表自查」步)。tar 成员前缀
           # (./ 或裸)不猜,统一子串匹配;symlink 无内容可倒(tar xzO 对 symlink
           # 输出 0 字节),mask 断言走 tzvf 的箭头字段。
           if [ -n "${t:-}" ]; then
@@ -268,11 +271,85 @@ jobs:
               echo "::error::rootfs 里没有 rauc/system.conf"
               fail_ota=1
             fi
+            # /etc/ota-version 内容断言:文件在 ≠ 注入链没断。注入链 local.conf
+            # 的 OTA_VERSION → recipe do_install → /etc/ota-version,断在中间
+            # 一环时板上客户端拿空/旧版本号比对,永远判「远端更新」→ 无限重装
+            # (2026-10-03 评审 F2)。三处同源在此闭环:本断言 + bundle 的
+            # manifest version + latest.json(bundle 步各自断)。
+            f=$(tar tzf "$t" | grep 'ota-version$' | head -1) || true
+            if [ -n "$f" ]; then
+              [ -n "${OTA_VERSION:-}" ] || { echo "::error::OTA_VERSION 环境变量为空,注入链自查无从做起"; fail_ota=1; }
+              v=$(tar xzOf "$t" "$f")
+              if [ "$v" != "${OTA_VERSION:-}" ]; then
+                echo "::error::/etc/ota-version 内容「$v」≠ 注入的 OTA_VERSION「${OTA_VERSION:-}」——版本注入链断裂"
+                fail_ota=1
+              fi
+            else
+              echo "::error::rootfs 里没有 /etc/ota-version —— 版本比对无从做起"
+              fail_ota=1
+            fi
           fi
           # 退出码覆盖 hermes + OTA 两个硬门;上面的容器组仍是 warning,行为不变
           if [ "$fail_hermes" -ne 0 ] || [ "$fail_ota" -ne 0 ]; then
             exit 1
           fi
+
+      # system.conf 的 device=/dev/mmcblk0p3|p4 是硬编码,与 wks 布局的对应
+      # 没有任何构建期机制保证;且 wks 源 ≠ 实建分区表——trust 行会被
+      # meta-rockchip 的 do_fixup_wks 整行剥除(缺 trust.img 的行剥掉)。
+      # 分区号一旦漂移,rauc bundle 写进错误分区(data 首当其冲),CI 却恒绿
+      # (2026-10-03 评审 F1)。所以直接对最终产物 wic 的 GPT 断言:五段俱全、
+      # 逐段名字与 UUID 对号(实测布局 = 2026-09-12-ota-ab.md:178 的 sfdisk;
+      # p1 起点顺带钉 4096——u-boot env @0x1F8000 落在它之前的空隙里)。
+      - name: wic 分区表自查
+        if: always()
+        run: |
+          d=build/tmp/deploy/images/$MACHINE
+          w=$(ls -1 "$d"/*.rootfs-*.wic 2>/dev/null | head -1) || true
+          if [ -z "$w" ]; then
+            w=$(find "$d" -maxdepth 1 -name '*.wic' ! -name '*.ufs.wic' 2>/dev/null | head -1) || true
+          fi
+          if [ -z "$w" ]; then
+            if [ "${{ steps.bitbake.outputs.code }}" = "0" ]; then
+              echo "::error::构建成功却找不到 wic,分区表自查无从做起"
+              exit 1
+            fi
+            echo "::warning::构建未走到出片,跳过 wic 分区表自查"
+            exit 0
+          fi
+          # sfdisk -d 只读 GPT 头与分区表,对 15GB 的 wic 也是瞬时
+          tab=$(sfdisk -d "$w")
+          mapfile -t parts < <(grep ' : start=' <<<"$tab")
+          fail=0
+          n=${#parts[@]}
+          [ "$n" -eq 5 ] || { echo "::error::wic 分区数 $n ≠ 5 —— 布局漂移,system.conf 的 p3/p4 随之失效"; fail=1; }
+          names=('uboot' 'boot' 'rootfs_a' 'rootfs_b' 'data')
+          for i in 0 1 2 3 4; do
+            [ "$i" -lt "$n" ] || break
+            if ! grep -q "name=\"${names[$i]}\"" <<<"${parts[$i]}"; then
+              echo "::error::分区 $((i + 1)) 应为 ${names[$i]},实为:${parts[$i]}"
+              fail=1
+            fi
+          done
+          # p3/p4 的 UUID 前缀 = machine conf 的 RK_ROOTDEV(_B)_UUID,与
+          # root= 的 PARTUUID 前缀匹配同源(u-boot 钩子按它选槽)。
+          # sfdisk dump 把 UUID 大写输出(util-linux 2.37 实测),-i 兜住两种写法
+          if [ "$n" -ge 3 ] && ! grep -qi 'uuid=614e0000' <<<"${parts[2]}"; then
+            echo "::error::p3 UUID 前缀非 614e0000 —— rootfs_a 挪号了"; fail=1
+          fi
+          if [ "$n" -ge 4 ] && ! grep -qi 'uuid=61500000' <<<"${parts[3]}"; then
+            echo "::error::p4 UUID 前缀非 61500000 —— rootfs_b 挪号了"; fail=1
+          fi
+          if [ "$n" -ge 1 ] && ! grep -q 'start= *4096,' <<<"${parts[0]}"; then
+            echo "::error::p1 起点非扇区 4096 —— u-boot env @0x1F8000 的空隙被挤压"; fail=1
+          fi
+          {
+            echo "### wic 分区表"
+            echo '```'
+            printf '%s\n' "${parts[@]}"
+            echo '```'
+          } | tee -a $GITHUB_STEP_SUMMARY
+          exit $fail
 
       - name: dtb 自查
         if: always()
@@ -361,6 +438,11 @@ jobs:
               grep -q "^$sym=y$" "$cfg" || { miss="$miss $sym"; fail=1; }
             done
           done
+          # =<数值> 的项不进上面的 =y 循环,单独断值:panic 后重启是两级回退网
+          # 的隐含前提(ota.cfg,2026-10-03 评审 F5),这一项被哪一层归零都等于
+          # 没有安全网
+          grep -q '^CONFIG_PANIC_TIMEOUT=10$' "$cfg" \
+            || { echo "::error::CONFIG_PANIC_TIMEOUT 不是 10 —— panic 不重启,回退网失效"; fail=1; }
           [ -n "$miss" ] && echo "::error::这些项没进最终 .config(多半是 depends on 没满足):$miss"
           {
             echo "### 内核配置自查"
