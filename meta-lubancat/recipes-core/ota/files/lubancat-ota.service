@@ -2,7 +2,20 @@
 Description=lubancat OTA 检查与安装(由 lubancat-ota.timer 触发)
 After=network-online.target time-sync.target
 Wants=network-online.target
+# 互斥(2026-10-03 评审 F4):timer 首拍(boot+5min)可能撞上仍在重试窗里的
+# 自检(5 项 x3 次 x30s,最坏 ~8 分钟还在跑),两边都以 libubootenv 读改写
+# 整块 env,并发丢写等于把槽位状态写坏。update 启动前先停 selfcheck;被停的
+# 那轮自检作废,但 upgrade_available 未被它改过,下次开机自会重跑(已进
+# mark-good 的重跑幂等),代价至多一次 LEFT 计数。
+Conflicts=lubancat-ota-selfcheck.service
+After=lubancat-ota-selfcheck.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/lubancat-ota/ota-update
+# oneshot 默认无启动超时(systemd.service(5):Type=oneshot 时 TimeoutStartSec
+# 默认 disabled)——`rauc install <url>` 流式拉取遇 TCP 停滞(半断连/零窗口)
+# 会永久挂在 activating:active 期间 timer 不再触发,OnUnitActiveSec 只在
+# 完成后计时,自升级停摆直到人工重启(2026-10-03 评审 F7)。30min ≈ 600MB
+# bundle 慢链路上的裕量;到期 SIGTERM,本轮作废,下轮重试。
+TimeoutStartSec=30min
