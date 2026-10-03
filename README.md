@@ -2,8 +2,20 @@
 
 用 Yocto **scarthgap**(5.0 LTS)把 RK3566 板子 `rk3566-lubancat` 从零跑起来。
 
-内核走 Rockchip vendor 6.1(`meta-rockchip` 在 scarthgap 上的默认值),NPU 因此
-可用;代价是 DTS bindings 是 Rockchip 私有、无上游路径。取舍见设计稿。
+内核走 Rockchip vendor 6.1,设备树使用自写的
+`rockchip/rk3566-lubancat-1io.dtb`。镜像包含 Hermes 原生运行环境、Podman
+和 RAUC A/B OTA;第三方 layer 由 `setup.sh` 按已验证的 commit SHA 拉取。
+
+## 当前进度
+
+2026-10-03 核对:基础镜像与 Hermes 有 2026-09-19 的实机通过记录;
+OTA 阶段 2/3 的代码、CI 打包和 R2 stable 分发链已完成,实际升级、断电重试
+与失败回退仍待上板。最新证据、待验项和操作入口见私有文档挂载点
+`docs/HANDOFF.md`;拉取代码后用 `git submodule update --init docs` 同步文档。
+
+OTA 当前只替换 rootfs。内核、DTB 与 U-Boot 更新需整盘重烧;
+共享 data 挂在 `/var/lib/containers`,Hermes 的 `/root/.hermes` 与
+`/etc/mihomo/config.yaml` 尚未迁到共享存储,换槽不会自动带走这些运行时配置。
 
 ## 目录
 
@@ -11,17 +23,18 @@
 |---|---|
 | `setup.sh` | 拉第三方 layer 到 `layers/`(不进 git) |
 | `meta-lubancat/` | 本仓唯一自写的 Yocto layer |
-| `ci/` | sstate seed 脚本与 mirror 配置说明 |
+| `ci/` | 实机验收脚本、R2 mirror 与 OTA 渠道约定 |
+| `docs/` | 私有文档 submodule:交接、操作手册、历史设计和 wiki |
 
 ## 快速开始
 
 ```sh
-./setup.sh                                  # 拉 poky / meta-openembedded / meta-rockchip / meta-virtualization
+./setup.sh                                  # 按固定 SHA 拉五个第三方 layer,包含 meta-rauc
 ROOT=$PWD                                   # oe-init-build-env 会切目录,先存下来
 . layers/poky/oe-init-build-env build
 ```
 
-`conf/bblayers.conf` 的 `BBLAYERS`(下面这份是实测通过的):
+`conf/bblayers.conf` 的 `BBLAYERS`(与 CI 的 layer 清单一致):
 
 ```
 BBLAYERS ?= " \
@@ -33,6 +46,7 @@ BBLAYERS ?= " \
   $ROOT/layers/meta-openembedded/meta-filesystems \
   $ROOT/layers/meta-rockchip \
   $ROOT/layers/meta-virtualization \
+  $ROOT/layers/meta-rauc \
   $ROOT/meta-lubancat \
 "
 ```
@@ -45,12 +59,15 @@ DISTRO  = "lubancat"
 INHERIT += "rm_work"
 ```
 
-`DISTRO` 不能省。镜像里有 podman 靠的是 `DISTRO_FEATURES` 里的
-`virtualization`,而那是配置级变量、recipe 改不动——它定义在
-`meta-lubancat/conf/distro/lubancat.conf`,只有设了 `DISTRO` 才会被读进来。
-用默认的 `poky` 编,能编过,但编出来的镜像里没有容器运行时。
+`DISTRO` 不能省。`lubancat.conf` 选择 systemd,启用 `virtualization` 与
+`rauc`,并接受镜像所需 ffmpeg 的 `commercial` 许可旗标。只设置 MACHINE
+不足以得到同一套镜像。`meta-rauc` 也不能漏:它是 `meta-lubancat` 声明的
+layer 依赖,提供 `rauc` 和 CI 打包所用的 `rauc-native`。
 
 然后 `bitbake lubancat-image-minimal`。
+
+CI 为 OTA 设置 `OTA_VERSION = "<run_number>-<sha8>"`;本地不设置时
+`/etc/ota-version` 默认为 `0`,不应把本地镜像误认成某个 CI 发布版本。
 
 ## rootfs 容量与 A/B 分区
 
