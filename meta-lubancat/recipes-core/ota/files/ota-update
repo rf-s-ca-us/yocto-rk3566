@@ -12,11 +12,15 @@
 #   下次真实升级的计数起点就被污染;若留下旧值(上次中止测试残余 3),重启会
 #   立即误触发 altbootcmd。成功与置位之间的毫秒级掉电窗口是已知缺口
 #   (计划「已知缺口」),单板记录不设防。
+#   装过又自检死项、已被回退的版本记入败记档(data 分区),下轮见档即跳
+#   ——否则 latest.json 停在坏版期间,每轮重演安装→切坏槽→死项→回退→
+#   再装 的循环,无终态(2026-10-03 评审 F3/F6)。
 #
 # 日志落 data 分区(/var/lib/containers/ota),跨槽位与重启原地存活。
 
 LOG_DIR="/var/lib/containers/ota"
 LOG_FILE="$LOG_DIR/update.log"
+FAILED_FILE="$LOG_DIR/failed-versions"
 VERSION_FILE="/etc/ota-version"
 LATEST_JSON="/tmp/ota-latest.json"
 
@@ -57,6 +61,15 @@ main() {
 	remote_url=$(json_str url)
 	if [ -z "$remote_version" ] || [ -z "$remote_url" ]; then
 		log "latest.json 缺 version/url 字段或格式不符,跳过"
+		return 0
+	fi
+
+	# 负记忆:装过又自检死项、已被回退的版本不再重装(档由 ota-selfcheck 的
+	# die 落,mark-good 后按版本陈旧度清理)。代价:环境性死项(如 NTP 被网络
+	# 拦)恢复后也不重试本版,等渠道下一版——比每轮 600MB 整槽写 + 多次重启
+	# 的无终态循环便宜得多。
+	if grep -qxF "$remote_version" "$FAILED_FILE" 2>/dev/null; then
+		log "版本 $remote_version 在败记档(此前装过且自检死项已回退),跳过,等渠道发布更新"
 		return 0
 	fi
 

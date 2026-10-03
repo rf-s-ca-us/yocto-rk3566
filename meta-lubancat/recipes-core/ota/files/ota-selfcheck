@@ -11,12 +11,16 @@
 #   + OTA 只换 rootfs,内核/DTB 在共享 boot 分区不随槽切换,容器内核能力
 #   不可能因 OTA 退化,每次开机拉真镜像又重又脏 data 分区。
 #   全过 → rauc status mark-good + fw_setenv upgrade_available 0 + 日志;
-#   有死项 → 日志落 data 分区 → systemctl reboot,不做任何 env 写动作——
+#   有死项 → 把自己这个(新)版本记入败记档(data 分区,跨升级轮次的负记忆,
+#   2026-10-03 评审 F3/F6:ota-update 见档即跳,堵住 坏版期间无限重装 循环)
+#   → 日志 → systemctl reboot,不做任何 env 写动作——
 #   跨启动兜底交给 u-boot 两级独立安全网(bootcount→altbootcmd 由 autoboot
 #   C 代码执行;BOOT_x_LEFT 淘汰由 bootcmd 里的 ab_boot 脚本执行)。
 
 LOG_DIR="/var/lib/containers/ota"
 LOG_FILE="$LOG_DIR/selfcheck.log"
+FAILED_FILE="$LOG_DIR/failed-versions"
+VERSION_FILE="/etc/ota-version"
 RETRY_WAIT=30
 RETRY_MAX=3
 
@@ -71,11 +75,32 @@ check_run() {
 }
 
 die() {
+	# 负记忆:先把当前(新)版本落进败记档再重启——ota-update 下轮见档即跳。
+	# 没有这一笔,latest.json 停在本版期间,设备永远循环 安装→死项→回退→再装
+	# (2026-10-03 评审 F3/F6)。档在 data 分区,跨槽位与重启存活。
+	mkdir -p "$LOG_DIR" 2>/dev/null
+	cat "$VERSION_FILE" >> "$FAILED_FILE" 2>/dev/null || true
 	log "自检死项 [$1](重试窗耗尽),重启——回退交给 u-boot 安全网,本脚本不碰 env"
 	# reboot 是异步的:必须立刻退出本进程,不然后面的检查项还有机会跑到
 	# mark-good,把死项的回退裁决覆盖掉(仿真实测抓过这个洞)
 	systemctl reboot
 	exit 1
+}
+
+# 败记只对「比当前运行版本新」的条目有意义:当前版本既然自检过,≤它的败记
+# 全是陈迹;回退到旧槽 mark-good 时,死项版本比旧槽新,恰好保留。
+prune_failed_versions() {
+	[ -f "$FAILED_FILE" ] || return 0
+	# 版本串 <run_number>-<sha8>,取整数前缀,非数字(含空)一律 0 ——
+	# 与 ota-update 的 run_number_of 同口径
+	cur=$(sed -n 's/^\([0-9][0-9]*\)-.*/\1/p' "$VERSION_FILE" 2>/dev/null)
+	case "$cur" in
+		'' | *[!0-9]*) cur=0 ;;
+	esac
+	awk -v cur="$cur" \
+		'{ rn = $0; sub(/-.*/, "", rn); if (rn !~ /^[0-9]+$/ || rn + 0 > cur + 0) print }' \
+		"$FAILED_FILE" 2>/dev/null | sort -u > "$FAILED_FILE.tmp" \
+		&& mv "$FAILED_FILE.tmp" "$FAILED_FILE"
 }
 
 main() {
@@ -91,6 +116,7 @@ main() {
 
 	if rauc status mark-good && fw_setenv upgrade_available 0; then
 		log "自检全过,mark-good 完成,升级收敛"
+		prune_failed_versions
 	else
 		log "mark-good / fw_setenv 复位失败(异常),不重启,LEFT 计数交给 u-boot 兜底"
 		return 1

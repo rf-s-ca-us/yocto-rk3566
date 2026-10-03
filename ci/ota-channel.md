@@ -43,6 +43,9 @@ bundle 先传 → latest.json 后传(S3 单对象 PUT 原子)。读侧要么看�
 
 - 板上只比 run_number 整数前缀:远端 > 本地才装;等于幂等跳过;小于跳过 + 日志
   (防 R2 被回写旧版造成循环降级)。
+- 败记跳过(2026-10-03 评审 F3/F6):装过又自检死项、已被回退的版本记入板上
+  败记档(data 分区),latest.json 停在该版期间不再重装——发布侧修坏版的
+  唯一方式是推一个更新的版本(run_number 必递增),原地替换同名版本无效。
 - 回滚 = u-boot 两级安全网自动完成(BOOT_ORDER/BOOT_<x>_LEFT + bootcount/altbootcmd,
   见 `docs/plans/2026-09-26-ota-phase23.md` 开放项 1/3)。渠道侧无回滚动作,
   不防回滚(拍板)。
