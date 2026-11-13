@@ -102,7 +102,7 @@ for dev in $DEVS; do
 	fi
 done
 
-section "附带(HANDOFF 待查证):内核配置重烧复验(CI 验不了最终 .config)"
+section "附带(HANDOFF 待查证):内核配置重烧复验(CI 断言构建产物里的 .config;板上 /proc/config.gz 仍要复验)"
 run "zcat /proc/config.gz | grep -E '^CONFIG_(CGROUP_BPF|OVERLAY_FS|POSIX_MQUEUE|BRIDGE|VETH)='"
 
 section "第 2 项 u-boot env 持久化与选槽能力(串口手工 —— 全案成立的前提,最后做)"

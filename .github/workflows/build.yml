@@ -15,14 +15,37 @@ on:
         default: lubancat-image-minimal
   push:
     branches: [main]
-    paths-ignore: ['**.md', 'LICENSE*', 'LICENSES/**']
+    # 纯 markdown / LICENSE 连 runner 都不起。docs 指针也列在这里,
+    # 但 GitHub 对 submodule 路径过滤不可靠,下面的 gate 才是发布门。
+    paths-ignore: ['**.md', 'LICENSE*', 'LICENSES/**', 'docs', 'docs/**']
 
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  gate:
+    name: 变更分类
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build_image: ${{ steps.decide.outputs.build_image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 判断要不要编镜像
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: ci/classify-image-build.sh
+
   build:
+    needs: gate
+    # 纯文档 push(含 docs submodule 指针)不编镜像,也就不会打 bundle、不会改 latest.json。
+    if: needs.gate.outputs.build_image == 'true'
     runs-on: ubuntu-latest
 
     # GitHub 的硬顶是 360 分钟,写更大的值会被静默截断。
@@ -59,7 +82,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             chrpath cpio diffstat gawk lz4 zstd file device-tree-compiler \
-            build-essential texinfo unzip wget git python3 python3-venv python3-pip
+            build-essential texinfo unzip wget git python3 python3-venv python3-pip \
+            rpm
 
       - name: 放开非特权 user namespace
         # Ubuntu 24.04 默认用 AppArmor 禁掉非特权 user namespace,而 bitbake
@@ -399,62 +423,11 @@ jobs:
 
       - name: 内核配置自查
         if: always()
-        run: |
-          # kconfig 对满足不了 depends on 的项是静默丢弃 —— 不报错、照样编过、
-          # 照样出片,跑起来才发现容器起不来。所以断言问最终的 .config,
-          # 不问 fragment:fragment 写了什么不是这里要回答的问题。
-          #
-          # 期望清单直接从 fragment 里生成,不另抄一份 —— 抄一份就会漂。
-          # container.cfg(容器)+ ota.cfg(dm-verity,RAUC verity bundle
-          # 板上安装前置)两份 fragment 同一断言:kconfig 对满足不了
-          # depends 的项静默丢弃,哪个 fragment 丢了都一样致命。
-          frags="meta-lubancat/recipes-kernel/linux/files/container.cfg meta-lubancat/recipes-kernel/linux/files/ota.cfg"
-          cfg=$(find build/tmp/work -path '*linux-rockchip*standard-build/.config' | head -1) || true
-          if [ -z "${cfg:-}" ]; then
-            if [ "${{ steps.bitbake.outputs.code }}" = "0" ]; then
-              if grep -q 'Running task .*linux-rockchip.*:do_configure' build/bitbake.log; then
-                echo "::error::内核这轮真编译过却找不到 .config —— 自查的 find 模式漂了,先修模式"
-                exit 1
-              fi
-              # 内核任务全 sstate 命中的轮:.config 根本不会被物化到盘上。
-              # 而配置输入一变 sstate 必失配、内核必本地重配、.config 必在 ——
-              # 所以走到这里的轮,配置输入与上一次真编译轮完全相同,同样的
-              # .config 那一轮已经被查过。降级为 warning,不 block。
-              # ("Running task" 只出现在真任务行;setscene 行叫
-              #   "Running setscene task",不会误入这个 grep。)
-              echo "::warning::内核全量缓存命中,.config 未落盘,跳过内核配置自查(输入与上轮相同)"
-              exit 0
-            fi
-            echo "::warning::构建未走到配置内核,跳过内核配置自查"
-            exit 0
-          fi
-
-          fail=0
-          miss=""
-          expected=0
-          for frag in $frags; do
-            expected=$((expected + $(grep -c '^CONFIG_.*=y' "$frag")))
-            for sym in $(sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=y.*/\1/p' "$frag"); do
-              grep -q "^$sym=y$" "$cfg" || { miss="$miss $sym"; fail=1; }
-            done
-          done
-          # =<数值> 的项不进上面的 =y 循环,单独断值:panic 后重启是两级回退网
-          # 的隐含前提(ota.cfg,2026-10-03 评审 F5),这一项被哪一层归零都等于
-          # 没有安全网
-          grep -q '^CONFIG_PANIC_TIMEOUT=10$' "$cfg" \
-            || { echo "::error::CONFIG_PANIC_TIMEOUT 不是 10 —— panic 不重启,回退网失效"; fail=1; }
-          [ -n "$miss" ] && echo "::error::这些项没进最终 .config(多半是 depends on 没满足):$miss"
-          {
-            echo "### 内核配置自查"
-            if [ $fail -eq 0 ]; then
-              echo "container.cfg + ota.cfg 共 $expected 项全部落进 .config。"
-            else
-              echo '```'
-              echo "缺:$miss"
-              echo '```'
-            fi
-          } | tee -a $GITHUB_STEP_SUMMARY
-          exit $fail
+        env:
+          BITBAKE_CODE: ${{ steps.bitbake.outputs.code }}
+        # 缓存命中时 workdir 没有 .config。脚本改从 kernel-dev 包或 sstate
+        # 取出同一份最终配置再断言;构建成功却找不到就失败,不再 warning 跳过。
+        run: ci/check-kernel-config.sh
 
       # 无论编完没编完都要传 —— 半轮的 sstate 也是下一轮的起点,
       # 这正是分轮种 sstate 的全部意义。
@@ -539,6 +512,7 @@ jobs:
       # if: success():自查红的轮(镜像内容/内核配置/dtb 任一)不许发渠道 ——
       # 板上会自动装 latest.json 指的东西,红轮发布等于给板子喂未验产物;
       # 墙钟到点(code=124,job 仍 success)由下面 code 判断跳过。
+      # 纯文档 push 到不了这个 job(gate 的 build_image=false)。
       - name: 打 rauc bundle 并推 R2 stable 渠道
         if: success()
         env:

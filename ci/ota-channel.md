@@ -32,7 +32,8 @@
 bundle 先传 → latest.json 后传(S3 单对象 PUT 原子)。读侧要么看到旧指针、
 要么看到新指针;见到新指针时 bundle 必已在位。自查红的轮(镜像内容/内核
 配置/dtb 任一硬门)不发渠道 —— 板上会自动装 latest.json 指的东西,红轮
-发布等于喂未验产物。
+发布等于喂未验产物。只改文档的 push(markdown、LICENSE、`docs` 指针)不编镜像,
+也不写 bundle 与 latest.json。
 
 ## 保留策略
 
