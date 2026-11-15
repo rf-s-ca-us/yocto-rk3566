@@ -6,6 +6,38 @@ persist_log() {
 	echo "persistent: $*"
 }
 
+# 树上至少有一个普通文件或符号链接才算有配置。镜像自带的空目录不算。
+persist_has_payload() {
+	dir=$1
+	[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+	[ -n "$(find "$dir" -mindepth 1 \( -type f -o -type l \) -print 2>/dev/null | head -n 1)" ]
+}
+
+# 选出要拷进新槽的那一份。空串表示不拷。
+# 已经挂到 data 上、并且里面有文件:那份就是共享存储,新槽开机再 bind,这里不重复拷。
+# 挂载点是空的,或者本槽根本没有文件:不能用它盖住另一槽 salvaged 的配置。
+persist_choose_source() {
+	live=$1
+	salvage=$2
+	if persist_is_mount "$live" && persist_has_payload "$live"; then
+		return 0
+	fi
+	if ! persist_is_mount "$live" && persist_has_payload "$live"; then
+		printf '%s\n' "$live"
+		return 0
+	fi
+	if [ -n "$salvage" ] && persist_has_payload "$salvage"; then
+		printf '%s\n' "$salvage"
+		return 0
+	fi
+}
+
+# 只在目的端真有文件时才 bind。空目录绑上去之后,钩子会把它当成
+# 「已经迁到 data」,不再去看另一槽里的配置。
+persist_should_bind() {
+	persist_has_payload "$1"
+}
+
 # $1 必须是 /proc/mounts 第二列的挂载点(精确匹配,不是前缀)。
 persist_is_mount() {
 	awk -v p="$1" '$2 == p { found = 1 } END { exit (found ? 0 : 1) }' /proc/mounts
@@ -119,6 +151,54 @@ persist_tighten_live() {
 	fi
 }
 
+# 安装前把「即将被整槽覆盖」的那份配置先抄出来。跑在写盘之前,
+# 失败就让 RAUC 中止,旧槽上的文件还在。
+# 落点在正在运行的根文件系统上,不进 tmpfs:Hermes 状态可能比内存大,
+# 拷不进去就失败返回,不能先把有配置的槽擦掉。
+persist_salvage_root() {
+	printf '%s\n' "${PERSIST_SALVAGE:-/var/lib/lubancat-persist-salvage}"
+}
+
+persist_salvage_clear() {
+	root=$(persist_salvage_root)
+	case "$root" in
+		/var/lib/lubancat-persist-salvage|/tmp/*|/var/tmp/*) ;;
+		*)
+			echo "rauc-slot-hook: 拒绝清理意外路径 $root" >&2
+			return 1
+			;;
+	esac
+	rm -rf "$root"
+}
+
+persist_salvage_reset() {
+	persist_salvage_clear
+	root=$(persist_salvage_root)
+	mkdir -p "$root"
+	chmod 0700 "$root"
+}
+
+persist_hook_slot_pre_install() {
+	if [ "${RAUC_SLOT_CLASS:-}" != "rootfs" ]; then
+		persist_log "非 rootfs 槽(${RAUC_SLOT_CLASS:-}),跳过"
+		return 0
+	fi
+	slot=${RAUC_SLOT_MOUNT_POINT:-}
+	if ! persist_slot_guard "$slot"; then
+		echo "rauc-slot-hook: 拒绝在 ${slot:-<空>} 上抢救配置" >&2
+		return 1
+	fi
+	slot=$(readlink -f "$slot")
+	persist_salvage_reset
+	root=$(persist_salvage_root)
+	# 只抢救真有文件的树。目标槽上的空目录(镜像自带的 /etc/mihomo)不记。
+	persist_copy_one "$slot/etc/wpa_supplicant" "$root/wpa"
+	persist_copy_one "$slot/etc/mihomo" "$root/mihomo"
+	persist_copy_one "$slot/root/.hermes" "$root/hermes"
+	persist_copy_one "$slot/root/.local/state/hermes" "$root/hermes-state"
+	persist_log "已从即将覆盖的槽抢救配置到 $root"
+}
+
 persist_hook_slot_post_install() {
 	if [ "${RAUC_SLOT_CLASS:-}" != "rootfs" ]; then
 		persist_log "非 rootfs 槽(${RAUC_SLOT_CLASS:-}),跳过"
@@ -130,9 +210,26 @@ persist_hook_slot_post_install() {
 		return 1
 	fi
 	slot=$(readlink -f "$slot")
-	persist_copy_one /etc/wpa_supplicant "$slot/etc/wpa_supplicant"
-	persist_copy_one /etc/mihomo "$slot/etc/mihomo"
-	persist_copy_one /root/.hermes "$slot/root/.hermes"
-	persist_copy_one /root/.local/state/hermes "$slot/root/.local/state/hermes"
+	root=$(persist_salvage_root)
+	# 正在跑的槽有文件就用它。它是空的(当前板子跑在没有配置的 B),
+	# 而 pre-install 从即将被盖掉的 A 抢救出了文件,就用抢救的那份。
+	# 两边都空则什么都不写,避免造出空树。
+	src=$(persist_choose_source /etc/wpa_supplicant "$root/wpa")
+	if [ -n "$src" ]; then
+		persist_copy_one "$src" "$slot/etc/wpa_supplicant"
+	fi
+	src=$(persist_choose_source /etc/mihomo "$root/mihomo")
+	if [ -n "$src" ]; then
+		persist_copy_one "$src" "$slot/etc/mihomo"
+	fi
+	src=$(persist_choose_source /root/.hermes "$root/hermes")
+	if [ -n "$src" ]; then
+		persist_copy_one "$src" "$slot/root/.hermes"
+	fi
+	src=$(persist_choose_source /root/.local/state/hermes "$root/hermes-state")
+	if [ -n "$src" ]; then
+		persist_copy_one "$src" "$slot/root/.local/state/hermes"
+	fi
 	persist_tighten_live "$slot"
+	persist_salvage_clear
 }

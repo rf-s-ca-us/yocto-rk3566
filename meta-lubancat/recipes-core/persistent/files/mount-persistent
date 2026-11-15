@@ -36,6 +36,12 @@ bind_one() {
 		persist_log "未迁移 $live,保持根文件系统上的副本"
 		return 1
 	fi
+	# 空目录也绑上的话,下一次安装会把这个空挂载当成「配置已在 data」,
+	# 不再去读另一槽。没有文件就不绑。
+	if ! persist_should_bind "$dest"; then
+		persist_log "不绑定空目录 $dest"
+		return 0
+	fi
 	if ! mount --bind "$dest" "$live"; then
 		persist_log "bind $dest -> $live 失败,保持根文件系统上的副本"
 		return 1

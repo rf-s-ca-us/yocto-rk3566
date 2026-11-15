@@ -32,8 +32,10 @@ jobs:
       build_image: ${{ steps.decide.outputs.build_image }}
     steps:
       - uses: actions/checkout@v4
-      - name: 空白分区与跨槽配置自测
-        run: ci/test-persistent.sh
+      - name: 空白分区、跨槽配置与选槽脚本自测
+        run: |
+          ci/test-persistent.sh
+          python3 ci/test-ab-boot.py
       - name: 判断要不要编镜像
         id: decide
         env:
@@ -619,7 +621,7 @@ jobs:
             echo ""
             echo "[image.rootfs]"
             echo "filename=rootfs.ext4"
-            echo "hooks=post-install"
+            echo "hooks=pre-install;post-install"
           } > "$WS/build/ota-bundle/in/manifest.raucm"
 
           # 一次性自签证书:rauc bundle 形式上要求 cert+key(main.c
@@ -646,8 +648,8 @@ jobs:
             || { echo "::error::bundle compatible 断言失败"; echo "$info"; exit 1; }
           echo "$info" | grep -Eq "^Version:[[:space:]]*'$OTA_VERSION'$" \
             || { echo "::error::bundle version 断言失败(期望 $OTA_VERSION)"; echo "$info"; exit 1; }
-          echo "$info" | grep -Eq 'Hooks:[[:space:]]+post-install' \
-            || { echo "::error::bundle 没有 rootfs post-install 钩子,旧槽配置迁不过去"; echo "$info"; exit 1; }
+          echo "$info" | grep -Eq 'Hooks:[[:space:]]+pre-install post-install' \
+            || { echo "::error::bundle 缺少 pre-install/post-install 钩子,覆盖有配置的槽时会丢掉那份配置"; echo "$info"; exit 1; }
 
           cd "$WS"
           # host 门②:latest.json 的 sha256 与 bundle 实际哈希一致(序列化

@@ -16,14 +16,15 @@ OTA 阶段 2/3 的代码、CI 打包和 R2 stable 分发链已完成,实际升�
 OTA 当前只替换 rootfs。内核、DTB 与 U-Boot 更新需整盘重烧。
 共享 data 挂在 `/var/lib/containers`(容器存储和 OTA 败记档)。Wi-Fi 凭据、
 `/root/.hermes`、`/root/.local/state/hermes` 与 `/etc/mihomo` 也放在这块盘上,
-开机 bind 回原来的路径,换槽还在。这些文件不进镜像、不进 CI。从还没有
-这套挂载的旧槽升级时,bundle 的 post-install 钩子先把四份配置拷进新槽,
-新槽首启再收入 data。
+开机 bind 回原来的路径,换槽还在。这些文件不进镜像、不进 CI。从旧槽升级时,
+bundle 在写盘前先把目标槽上已有的配置抢救出来;正在运行的槽是空的也不用空目录
+盖掉它。新槽首启再收入 data,空目录不会被 bind。
 
-整盘重烧不会清掉 eMMC 里旧的 U-Boot 环境。旧环境没有 `BOOT_ORDER` 时仍优先于
-镜像编进去的默认环境,选槽会哑火。这种板子要在串口执行一次
-`env default -a; saveenv; reset`。镜像不自动做这件事:自动清会把已经配对的
-环境一起抹掉。
+#88 的 U-Boot 里 `ab_boot` 用了 `break`,而这版 vendor U-Boot 没有这条命令。
+`BOOT_ORDER=A B` 时循环会把 `BOOT_SLOT` 留在最后一个有剩余次数的槽,所以默认
+环境实际启动 B。这个选槽修在 U-Boot 里,rootfs OTA 带不走,要整盘重烧新的
+bootloader。`env default -a; saveenv; reset` 只清旧环境,清不掉这个脚本问题。
+镜像仍不会自动清环境:自动清会把已经配对的环境一起抹掉。
 
 ## 目录
 

@@ -1,15 +1,18 @@
 #!/bin/sh
 # RAUC bundle 钩子。跑在「正在安装的那套系统」上,由 bundle 自带,
 # 所以从还没有 bind 的旧镜像升级时也能执行。
-# 只把允许名单从当前根文件系统拷进新槽,不格式化 data,不碰其它路径。
-# 新槽开机后的 mount-persistent 再把这份拷贝收进 data 分区。
-# 源路径如果已经是挂载点,说明内容在 data 上,这里不重复拷(避免每轮
-# 升级都把 Hermes 状态再写进新槽)。
+# pre-install:写盘前把目标槽上已有的配置抢救出来。正在运行的槽如果是空的
+# (板子正跑在没有 Wi-Fi/Hermes/mihomo 的 B,完整配置在即将被覆盖的 A),
+# 只看运行中的根会把空树种进新槽,A 上的配置就没了。
+# post-install:运行中的树有文件就用它;否则用抢救出来的那份。两边都空则不写。
 set -eu
 
 . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/persistent-common.sh"
 
 case "${1:-}" in
+	slot-pre-install)
+		persist_hook_slot_pre_install
+		;;
 	slot-post-install)
 		persist_hook_slot_post_install
 		;;

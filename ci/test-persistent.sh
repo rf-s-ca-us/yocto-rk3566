@@ -60,7 +60,9 @@ else
 fi
 
 workdir=$(mktemp -d)
-trap 'rm -rf "$workdir"' EXIT
+trap 'rm -rf "$workdir"; rm -rf /tmp/ov-* 2>/dev/null || true' EXIT
+# 钩子的抢救目录默认在 /var/lib。测试里改到临时目录,避免碰到宿主机。
+export PERSIST_SALVAGE=$workdir/salvage
 
 make_fake_mke2fs() {
 	dir=$1
@@ -319,6 +321,23 @@ expect_eq "hermes env 0600" 600 "$(mode_of "$root/root/.hermes/.env")"
 expect_eq "wpa 目录 0700" 700 "$(mode_of "$root/etc/wpa_supplicant")"
 expect_eq "hermes 目录 0700" 700 "$(mode_of "$root/root/.hermes")"
 
+echo "== empty tree does not beat a salvaged tree"
+live_empty=$(mktemp -d)
+salvage=$(mktemp -d)
+mkdir -p "$salvage"
+printf 'from-A\n' > "$salvage/wpa_supplicant-wlan.conf"
+chosen=$(persist_choose_source "$live_empty" "$salvage")
+expect_eq "空的运行中目录让位给抢救副本" "$salvage" "$chosen"
+if persist_should_bind "$live_empty"; then
+	bad "空目录仍被允许 bind"
+else
+	ok "空目录不 bind"
+fi
+live_full=$(mktemp -d)
+printf 'from-B\n' > "$live_full/wpa_supplicant-wlan.conf"
+chosen=$(persist_choose_source "$live_full" "$salvage")
+expect_eq "运行中的非空目录优先于抢救副本" "$live_full" "$chosen"
+
 echo "== hook refuses to write outside a RAUC slot mount"
 set +e
 out=$(RAUC_SLOT_CLASS=rootfs RAUC_SLOT_MOUNT_POINT=/ "$HOOK" slot-post-install 2>&1)
@@ -381,14 +400,15 @@ if unshare --user --map-root-user --mount true >/dev/null 2>&1; then
 		set -eu
 		# 盖住 /etc 和 /root 的可写层,不改宿主机。lower 仍要留着,
 		# 否则 /usr/bin/awk → /etc/alternatives/awk 会断。
-		mkdir -p /tmp/ov/etc-lower /tmp/ov/etc-upper /tmp/ov/etc-work \
-			/tmp/ov/root-lower /tmp/ov/root-upper /tmp/ov/root-work
-		mount --bind /etc /tmp/ov/etc-lower
-		mount --bind /root /tmp/ov/root-lower
+		ov=/tmp/ov-$$
+		mkdir -p "$ov/etc-lower" "$ov/etc-upper" "$ov/etc-work" \
+			"$ov/root-lower" "$ov/root-upper" "$ov/root-work"
+		mount --bind /etc "$ov/etc-lower"
+		mount --bind /root "$ov/root-lower"
 		mount -t overlay overlay \
-			-o lowerdir=/tmp/ov/etc-lower,upperdir=/tmp/ov/etc-upper,workdir=/tmp/ov/etc-work /etc
+			-o lowerdir=$ov/etc-lower,upperdir=$ov/etc-upper,workdir=$ov/etc-work /etc
 		mount -t overlay overlay \
-			-o lowerdir=/tmp/ov/root-lower,upperdir=/tmp/ov/root-upper,workdir=/tmp/ov/root-work /root
+			-o lowerdir=$ov/root-lower,upperdir=$ov/root-upper,workdir=$ov/root-work /root
 		mkdir -p /etc/wpa_supplicant /etc/mihomo /root/.hermes /root/.local/state/hermes
 		printf "secret\n" > /etc/wpa_supplicant/wpa_supplicant-wlan.conf
 		printf "proxy\n" > /etc/mihomo/config.yaml
@@ -432,6 +452,71 @@ if unshare --user --map-root-user --mount true >/dev/null 2>&1; then
 	fi
 else
 	echo "  skip 钩子挂载测试:unshare 不可用"
+fi
+
+echo "== pre-install keeps the other slot when the running slot is empty"
+if unshare --user --map-root-user --mount true >/dev/null 2>&1; then
+	set +e
+	unshare --user --map-root-user --mount sh -c '
+		set -eu
+		ov=/tmp/ov-$$
+		mkdir -p "$ov/etc-lower" "$ov/etc-upper" "$ov/etc-work" \
+			"$ov/root-lower" "$ov/root-upper" "$ov/root-work"
+		mount --bind /etc "$ov/etc-lower"
+		mount --bind /root "$ov/root-lower"
+		mount -t overlay overlay \
+			-o lowerdir=$ov/etc-lower,upperdir=$ov/etc-upper,workdir=$ov/etc-work /etc
+		mount -t overlay overlay \
+			-o lowerdir=$ov/root-lower,upperdir=$ov/root-upper,workdir=$ov/root-work /root
+		# /var 换成内存盘,抢救目录和 data 挂载都不写宿主机。
+		mount -t tmpfs tmpfs /var
+		# 正在跑的 B:目录在,但是没有配置文件。
+		mkdir -p /etc/wpa_supplicant /etc/mihomo /root/.hermes
+		mount -t tmpfs tmpfs /mnt
+		mkdir -p /mnt/rauc/rootfs.1
+		mount -t tmpfs tmpfs /mnt/rauc/rootfs.1
+		mkdir -p /mnt/rauc/rootfs.1/etc/wpa_supplicant /mnt/rauc/rootfs.1/root/.hermes
+		printf "kept-from-A\n" > /mnt/rauc/rootfs.1/etc/wpa_supplicant/wpa_supplicant-wlan.conf
+		printf "env-from-A\n" > /mnt/rauc/rootfs.1/root/.hermes/.env
+		chmod 0644 /mnt/rauc/rootfs.1/etc/wpa_supplicant/wpa_supplicant-wlan.conf \
+			/mnt/rauc/rootfs.1/root/.hermes/.env
+		RAUC_SLOT_CLASS=rootfs \
+		RAUC_SLOT_MOUNT_POINT=/mnt/rauc/rootfs.1 \
+		RAUC_MOUNT_PREFIX=/mnt/rauc \
+		PERSIST_SALVAGE=/var/lib/lubancat-persist-salvage \
+			'"$HOOK"' slot-pre-install
+		# 模拟 RAUC 写完新 rootfs:旧文件没了,只剩镜像里的空目录。
+		rm -rf /mnt/rauc/rootfs.1/*
+		mkdir -p /mnt/rauc/rootfs.1/etc/mihomo
+		RAUC_SLOT_CLASS=rootfs \
+		RAUC_SLOT_MOUNT_POINT=/mnt/rauc/rootfs.1 \
+		RAUC_MOUNT_PREFIX=/mnt/rauc \
+		PERSIST_SALVAGE=/var/lib/lubancat-persist-salvage \
+			'"$HOOK"' slot-post-install
+		grep -qx kept-from-A /mnt/rauc/rootfs.1/etc/wpa_supplicant/wpa_supplicant-wlan.conf
+		grep -qx env-from-A /mnt/rauc/rootfs.1/root/.hermes/.env
+		test "$(stat -c %a /mnt/rauc/rootfs.1/etc/wpa_supplicant/wpa_supplicant-wlan.conf)" = 600
+		test ! -e /var/lib/lubancat-persist-salvage
+		# 空 data 目录不能绑到配置路径上。
+		mkdir -p /var/lib/containers
+		mount -t tmpfs tmpfs /var/lib/containers
+		'"$MOUNT"'
+		if mountpoint -q /etc/wpa_supplicant; then
+			echo "empty persistent dir was bind-mounted" >&2
+			exit 1
+		fi
+		# 跑这一步时新槽上的凭据还在本命名空间的 /etc 里吗?不在,B 的 /etc 仍是空的。
+		# 绑定之前 data 也是空的,所以不应该出现挂载。上面已经断言。
+	'
+	rc=$?
+	set -e
+	if [ "$rc" -eq 0 ]; then
+		ok "空 B 不盖掉 A 上抢救出来的配置,也不绑定空目录"
+	else
+		bad "空 B 不盖掉 A 上抢救出来的配置,也不绑定空目录"
+	fi
+else
+	echo "  skip 抢救测试:unshare 不可用"
 fi
 
 echo
