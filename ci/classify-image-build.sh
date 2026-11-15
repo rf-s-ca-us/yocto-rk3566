@@ -21,7 +21,7 @@ emit() {
 
 event=${EVENT_NAME:-push}
 if [ "$event" != "push" ]; then
-	echo "事件 $event:按手动构建处理,会编镜像并允许发布 OTA"
+	echo "事件 $event:按手动构建处理,会编镜像。渠道是否发布由 workflow 的 publish_ota 决定,默认不发"
 	emit true
 	exit 0
 fi

@@ -13,6 +13,10 @@ on:
       target:
         description: bitbake 目标
         default: lubancat-image-minimal
+      publish_ota:
+        description: 成功后是否推 R2 stable 并改写 latest.json。默认否,只留 Actions artifact。
+        type: boolean
+        default: false
   push:
     branches: [main]
     # 纯 markdown / LICENSE 连 runner 都不起。docs 指针也列在这里,
@@ -526,6 +530,24 @@ jobs:
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
 
+      - name: 记录可烧写镜像校验和
+        if: always()
+        run: |
+          if [ -d out ] && find out -type f -print -quit | grep -q .; then
+            (
+              cd out
+              find . -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -d '\n' sha256sum
+            ) | tee out/SHA256SUMS
+            {
+              echo "### SHA256"
+              echo '```'
+              cat out/SHA256SUMS
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::没有 out/ 文件,跳过校验和"
+          fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -543,8 +565,10 @@ jobs:
       # 板上会自动装 latest.json 指的东西,红轮发布等于给板子喂未验产物;
       # 墙钟到点(code=124,job 仍 success)由下面 code 判断跳过。
       # 纯文档 push 到不了这个 job(gate 的 build_image=false)。
+      # push 到 main 仍发布。workflow_dispatch 默认不发;只有显式
+      # publish_ota=true 才改渠道。分支上的手动构建因此只出 artifact。
       - name: 打 rauc bundle 并推 R2 stable 渠道
-        if: success()
+        if: success() && (github.event_name == 'push' || github.event.inputs.publish_ota == 'true')
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
