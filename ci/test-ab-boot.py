@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Simulate vendor U-Boot 2017.09 hush enough to run ab_boot.
+"""Model of vendor U-Boot 2017.09 hush, not that binary.
 
-break is not a command in that tree: cmd_process() prints
-"Unknown command 'break'" and returns, and run_list_real() has no
-break flag. The for-loop therefore keeps going. make_list_in() splits
-${BOOT_ORDER} on spaces, so the last LEFT>0 slot overwrites BOOT_SLOT.
+Checked against JeffyCN/mirrors a93658f8 common/cli_hush.c:
+break is not compiled (builtin table is ifndef __U_BOOT__), and
+cmd_process() does not stop run_list_real()'s for loop. make_list_in()
+splits on spaces. Nested if is a real context stack (reserved_word
+FLAG_START/FLAG_END) and is modeled by recursion here.
 
-This interpreter treats `break` the same way (no-op). The script now in
-0002 must select the first viable slot anyway.
+This file does not execute the 2017.09 interpreter. A result here is
+not a substitute for the board's serial log.
 """
 
 import pathlib

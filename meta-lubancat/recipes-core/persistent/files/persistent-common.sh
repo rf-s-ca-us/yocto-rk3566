@@ -13,22 +13,61 @@ persist_has_payload() {
 	[ -n "$(find "$dir" -mindepth 1 \( -type f -o -type l \) -print 2>/dev/null | head -n 1)" ]
 }
 
+# $2 是哨兵相对路径。Wi-Fi / mihomo / hermes 以凭据文件为准:
+# 运行中的树里只有日志、没有 .env,不能算「有配置」,否则会盖掉另一槽的凭据。
+# 哨兵为空时退回「任意普通文件或符号链接」。
+persist_tree_ok() {
+	dir=$1
+	sentinel=$2
+	if [ -n "$sentinel" ]; then
+		[ -f "$dir/$sentinel" ] || [ -L "$dir/$sentinel" ]
+		return
+	fi
+	persist_has_payload "$dir"
+}
+
 # 选出要拷进新槽的那一份。空串表示不拷。
-# 已经挂到 data 上、并且里面有文件:那份就是共享存储,新槽开机再 bind,这里不重复拷。
-# 挂载点是空的,或者本槽根本没有文件:不能用它盖住另一槽 salvaged 的配置。
+# 已经挂到 data 上、并且哨兵在:那份就是共享存储,新槽开机再 bind,这里不重复拷。
+# 运行中的树没有哨兵时,即使旁边有别的文件,也让位给抢救副本。
 persist_choose_source() {
 	live=$1
 	salvage=$2
-	if persist_is_mount "$live" && persist_has_payload "$live"; then
+	sentinel=$3
+	if persist_is_mount "$live" && persist_tree_ok "$live" "$sentinel"; then
 		return 0
 	fi
-	if ! persist_is_mount "$live" && persist_has_payload "$live"; then
+	if ! persist_is_mount "$live" && persist_tree_ok "$live" "$sentinel"; then
 		printf '%s\n' "$live"
 		return 0
 	fi
-	if [ -n "$salvage" ] && persist_has_payload "$salvage"; then
+	if [ -n "$salvage" ] && persist_tree_ok "$salvage" "$sentinel"; then
 		printf '%s\n' "$salvage"
 		return 0
+	fi
+}
+
+# 写到正在运行的根之前先看剩余空间。不够就失败,RAUC 此时还没写目标槽。
+persist_require_space() {
+	src=$1
+	dest_parent=$2
+	if ! persist_has_payload "$src"; then
+		return 0
+	fi
+	if ! command -v du >/dev/null 2>&1 || ! command -v df >/dev/null 2>&1; then
+		return 0
+	fi
+	need=$(du -sk "$src" 2>/dev/null | awk '{print $1}')
+	have=$(df -Pk "$dest_parent" 2>/dev/null | awk 'NR==2 {print $4}')
+	case "$need" in
+		''|*[!0-9]*) return 0 ;;
+	esac
+	case "$have" in
+		''|*[!0-9]*) return 0 ;;
+	esac
+	# 留 1MiB 给目录项和日志。
+	if [ "$((need + 1024))" -gt "$have" ]; then
+		persist_log "空间不够: $src 约 ${need}KiB, $dest_parent 只剩 ${have}KiB,不开始覆盖目标槽"
+		return 1
 	fi
 }
 
@@ -192,6 +231,11 @@ persist_hook_slot_pre_install() {
 	persist_salvage_reset
 	root=$(persist_salvage_root)
 	# 只抢救真有文件的树。目标槽上的空目录(镜像自带的 /etc/mihomo)不记。
+	# 空间不够就在这里失败:img_to_fs_handler 的 pre-install 失败发生在写盘之前。
+	persist_require_space "$slot/etc/wpa_supplicant" "$root" || return 1
+	persist_require_space "$slot/etc/mihomo" "$root" || return 1
+	persist_require_space "$slot/root/.hermes" "$root" || return 1
+	persist_require_space "$slot/root/.local/state/hermes" "$root" || return 1
 	persist_copy_one "$slot/etc/wpa_supplicant" "$root/wpa"
 	persist_copy_one "$slot/etc/mihomo" "$root/mihomo"
 	persist_copy_one "$slot/root/.hermes" "$root/hermes"
@@ -211,22 +255,21 @@ persist_hook_slot_post_install() {
 	fi
 	slot=$(readlink -f "$slot")
 	root=$(persist_salvage_root)
-	# 正在跑的槽有文件就用它。它是空的(当前板子跑在没有配置的 B),
-	# 而 pre-install 从即将被盖掉的 A 抢救出了文件,就用抢救的那份。
-	# 两边都空则什么都不写,避免造出空树。
-	src=$(persist_choose_source /etc/wpa_supplicant "$root/wpa")
+	# 凭据文件才算这棵树有配置。B 上只有日志、没有 .env 时,用 A 抢救出来的那份。
+	# 两边都没有哨兵则不写,避免造出空树。
+	src=$(persist_choose_source /etc/wpa_supplicant "$root/wpa" wpa_supplicant-wlan.conf)
 	if [ -n "$src" ]; then
 		persist_copy_one "$src" "$slot/etc/wpa_supplicant"
 	fi
-	src=$(persist_choose_source /etc/mihomo "$root/mihomo")
+	src=$(persist_choose_source /etc/mihomo "$root/mihomo" config.yaml)
 	if [ -n "$src" ]; then
 		persist_copy_one "$src" "$slot/etc/mihomo"
 	fi
-	src=$(persist_choose_source /root/.hermes "$root/hermes")
+	src=$(persist_choose_source /root/.hermes "$root/hermes" .env)
 	if [ -n "$src" ]; then
 		persist_copy_one "$src" "$slot/root/.hermes"
 	fi
-	src=$(persist_choose_source /root/.local/state/hermes "$root/hermes-state")
+	src=$(persist_choose_source /root/.local/state/hermes "$root/hermes-state" "")
 	if [ -n "$src" ]; then
 		persist_copy_one "$src" "$slot/root/.local/state/hermes"
 	fi

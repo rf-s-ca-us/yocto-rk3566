@@ -3,8 +3,8 @@ DESCRIPTION = "update.img 的 data:grow 不带文件系统字节。本包的首�
 GPT 名 data 的分区没有 blkid 签名、且前 1MiB 全为零时创建 LABEL=data 的 ext4, \
 已有文件系统一律不写。Wi-Fi 凭据、/root/.hermes、/root/.local/state/hermes \
 和 /etc/mihomo 开机 bind 到 /var/lib/containers/persistent,换槽还在。 \
-从旧槽升级时,打进 bundle 的 post-install 钩子先把这四份拷进新槽,新槽再收入 \
-data。秘密不进镜像。"
+从旧槽升级时,bundle 在写盘前先抢救目标槽上已有的配置;正在运行的槽 \
+没有对应凭据文件时不用空树或日志盖掉它。新槽再收入 data。秘密不进镜像。"
 
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"

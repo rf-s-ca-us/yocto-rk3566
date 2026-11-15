@@ -326,7 +326,7 @@ live_empty=$(mktemp -d)
 salvage=$(mktemp -d)
 mkdir -p "$salvage"
 printf 'from-A\n' > "$salvage/wpa_supplicant-wlan.conf"
-chosen=$(persist_choose_source "$live_empty" "$salvage")
+chosen=$(persist_choose_source "$live_empty" "$salvage" wpa_supplicant-wlan.conf)
 expect_eq "空的运行中目录让位给抢救副本" "$salvage" "$chosen"
 if persist_should_bind "$live_empty"; then
 	bad "空目录仍被允许 bind"
@@ -335,8 +335,27 @@ else
 fi
 live_full=$(mktemp -d)
 printf 'from-B\n' > "$live_full/wpa_supplicant-wlan.conf"
-chosen=$(persist_choose_source "$live_full" "$salvage")
-expect_eq "运行中的非空目录优先于抢救副本" "$live_full" "$chosen"
+chosen=$(persist_choose_source "$live_full" "$salvage" wpa_supplicant-wlan.conf)
+expect_eq "运行中的凭据文件优先于抢救副本" "$live_full" "$chosen"
+live_logs=$(mktemp -d)
+mkdir -p "$live_logs/logs"
+printf 'noise\n' > "$live_logs/logs/gateway.log"
+hermes_salvage=$(mktemp -d)
+printf 'real-env\n' > "$hermes_salvage/.env"
+chosen=$(persist_choose_source "$live_logs" "$hermes_salvage" .env)
+expect_eq "只有日志的运行中树让位给带 .env 的抢救副本" "$hermes_salvage" "$chosen"
+# 符号链接保持为链接,不把链接外面的目标抄进来。
+linksrc=$(mktemp -d)
+outside=$(mktemp -d)
+printf 'outside\n' > "$outside/secret"
+ln -s "$outside/secret" "$linksrc/wpa_supplicant-wlan.conf"
+linkdst=$(mktemp -d)
+persist_copy_one "$linksrc" "$linkdst"
+if [ -L "$linkdst/wpa_supplicant-wlan.conf" ]; then
+	ok "拷贝保留符号链接"
+else
+	bad "拷贝保留符号链接"
+fi
 
 echo "== hook refuses to write outside a RAUC slot mount"
 set +e
