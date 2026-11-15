@@ -1,0 +1,106 @@
+#!/bin/sh
+# 只在 GPT 分区名 data 上创建 ext4,而且必须同时满足:
+#   blkid -p 没有签名(退出码恰好是 2,不是其它错误);
+#   偏移 1080 处不是 ext 超级块魔数;
+#   设备至少有 1MiB,且这 1MiB 全是 0。
+# 任何一条不满足都退出 0、什么都不写。
+# mke2fs 不加强制开关。探测如果漏了,它自己仍会拒绝(标准输入是 /dev/null,
+# 答不了确认)。失败不重试。
+set -eu
+
+DEV=${DATA_DEV:-/dev/disk/by-partlabel/data}
+PREFIX=1048576
+
+log() {
+	echo "format-data: $*"
+}
+
+if [ ! -e "$DEV" ] && [ "$DEV" = /dev/disk/by-partlabel/data ]; then
+	i=0
+	while [ ! -e "$DEV" ]; do
+		i=$((i + 1))
+		if [ "$i" -ge 30 ]; then
+			break
+		fi
+		sleep 1
+	done
+fi
+
+if [ ! -e "$DEV" ]; then
+	log "没有 $DEV,跳过"
+	exit 0
+fi
+
+if [ ! -b "$DEV" ] && [ "${DATA_FORMAT_ALLOW_FILE:-}" != 1 ]; then
+	log "$DEV 不是块设备,拒绝格式化"
+	exit 0
+fi
+
+if ! command -v blkid >/dev/null 2>&1; then
+	log "没有 blkid,拒绝格式化"
+	exit 0
+fi
+
+rc=0
+blkid -p "$DEV" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+	log "$DEV 已有 blkid 签名,不格式化"
+	exit 0
+fi
+if [ "$rc" -ne 2 ]; then
+	log "blkid -p $DEV 退出 $rc,拒绝格式化"
+	exit 0
+fi
+
+magic=$(dd if="$DEV" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)
+if [ "$magic" = "53ef" ]; then
+	log "$DEV 有 ext 超级块魔数,不格式化"
+	exit 0
+fi
+
+tmp=$(mktemp)
+dd if="$DEV" of="$tmp" bs="$PREFIX" count=1 2>/dev/null || {
+	log "读取 $DEV 前缀失败,拒绝格式化"
+	rm -f "$tmp"
+	exit 0
+}
+size=$(wc -c < "$tmp" | tr -d ' ')
+if [ "$size" -ne "$PREFIX" ]; then
+	log "$DEV 可读前缀只有 ${size} 字节,拒绝格式化"
+	rm -f "$tmp"
+	exit 0
+fi
+if tr -d '\000' < "$tmp" | grep -q .; then
+	log "$DEV 前 1MiB 非全零,拒绝格式化"
+	rm -f "$tmp"
+	exit 0
+fi
+rm -f "$tmp"
+
+if ! command -v mke2fs >/dev/null 2>&1; then
+	log "没有 mke2fs,拒绝格式化"
+	exit 0
+fi
+
+log "确认 $DEV 空白,创建 ext4 LABEL=data"
+# nodiscard:整盘 TRIM 在大 eMMC 上会拖住首启,空白分区不需要先擦。
+# 不加重试。标准输入关掉,避免任何确认提示被当成同意。
+mke2fs -t ext4 -L data -E nodiscard "$DEV" </dev/null
+
+if [ -b "$DEV" ] && command -v blockdev >/dev/null 2>&1; then
+	blockdev --flushbufs "$DEV" || true
+fi
+
+label=$(blkid -p -s LABEL -o value "$DEV" 2>/dev/null || true)
+if [ "$label" != data ]; then
+	log "格式化后 LABEL=${label:-<空>},期望 data"
+	exit 1
+fi
+
+if [ -b "$DEV" ] && command -v udevadm >/dev/null 2>&1; then
+	udevadm trigger --action=change "$DEV" || log "udevadm trigger 失败"
+	udevadm settle || true
+fi
+
+log "$DEV 已是 LABEL=data"
+exit 0

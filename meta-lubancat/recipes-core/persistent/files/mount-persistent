@@ -1,0 +1,54 @@
+#!/bin/sh
+# 把允许名单上的四棵目录绑到 data 分区。data 上还没有内容、而本槽根文件系统
+# 上有(典型是刚被 bundle 钩子拷进来的那一份)时,先拷过去再绑。
+# data 上已有内容则绝不覆盖。拷贝失败就不 bind,免得空目录盖住原件。
+set -eu
+
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/persistent-common.sh"
+
+if ! persist_data_is_separate; then
+	persist_log "/var/lib/containers 不是独立挂载,配置留在本槽根文件系统"
+	exit 0
+fi
+
+store=/var/lib/containers/persistent
+mkdir -p "$store"
+chmod 0700 "$store"
+
+failed=0
+
+bind_one() {
+	live=$1
+	name=$2
+	dest=$store/$name
+	# 符号链接可能指到 data 以外。mkdir/bind 都会跟着走,先拒绝。
+	if [ -L "$live" ]; then
+		persist_log "不碰符号链接 $live"
+		return 0
+	fi
+	mkdir -p "$live" "$dest"
+	chmod 0700 "$dest"
+	if persist_is_mount "$live"; then
+		persist_log "$live 已挂载"
+		return 0
+	fi
+	if ! persist_seed_dir "$live" "$dest"; then
+		persist_log "未迁移 $live,保持根文件系统上的副本"
+		return 1
+	fi
+	if ! mount --bind "$dest" "$live"; then
+		persist_log "bind $dest -> $live 失败,保持根文件系统上的副本"
+		return 1
+	fi
+	persist_log "bind $dest -> $live"
+}
+
+bind_one /etc/wpa_supplicant wpa || failed=1
+bind_one /etc/mihomo mihomo || failed=1
+bind_one /root/.hermes hermes || failed=1
+bind_one /root/.local/state/hermes hermes-state || failed=1
+
+# 绑完再收一次权限:用户事后放进来的凭据,下一次开机也会被收到 0600/0700。
+persist_tighten_live /
+
+exit "$failed"

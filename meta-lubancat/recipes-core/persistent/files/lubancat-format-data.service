@@ -1,0 +1,15 @@
+[Unit]
+Description=空白 data 分区首次格式化为 ext4(LABEL=data)
+DefaultDependencies=no
+# local-fs-pre 排在 fsck 和 fstab 挂载之前。格式化必须先做完,
+# 否则 fsck 会和 mke2fs 同时写这块盘。
+Before=local-fs-pre.target var-lib-containers.mount
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/lubancat-persistent/format-data-if-empty
+
+[Install]
+WantedBy=local-fs-pre.target

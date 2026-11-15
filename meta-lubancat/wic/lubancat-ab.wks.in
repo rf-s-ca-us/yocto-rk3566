@@ -28,8 +28,11 @@
 # --align 8192 只控制分区起点,不再额外增加文件系统容量。
 #
 # data 尺寸只是镜像内的初始值:parameter.txt 生成时 RK_PARTITION_GROW=1
-# 把最后一个分区标成 grow,RKDevTool 烧录时吃满剩余 eMMC;ext4 文件系统
-# 本身还是 2G,要做 resize2fs 扩容是阶段 2 之后的事(已知缺口,先记录)。
+# 把最后一个分区标成 grow,RKDevTool 烧录时吃满剩余 eMMC。烧录包不带这块
+# 分区的文件系统字节(烧完前 1MiB 是 0,blkid 无签名)。首启
+# lubancat-format-data.service 只在这种空白盘上 mke2fs,文件系统跟着分区
+# 的实际大小走。WIC 里这份 --fstype ext4 已经格式化过,服务看到签名就不动,
+# 所以直接写 WIC 时 data 仍是这里的 2G,不会被首启扩成整盘。
 #
 # env 不占分区:u-boot env 钉在 0x1F8000(见 recipes-bsp/u-boot 的补丁),
 # 落在 idbloader 冗余副本与 uboot 分区(2M 起)之间的实测空隙里,与这里
@@ -47,4 +50,4 @@ part --source rawcopy --sourceparams="file=trust.img" --part-name trust --align 
 part --source rawcopy --sourceparams="file=boot.img" --part-name boot --align 4
 part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_a --uuid ${RK_ROOTDEV_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --overhead-factor 1 --extra-space 0 --align 8192
 part / --source rootfs --fstype ${RK_ROOTFS_TYPE} --part-name rootfs_b --uuid ${RK_ROOTDEV_B_UUID} --mkfs-extraopts "${RK_ROOTFS_EXTRAOPTS}" --overhead-factor 1 --extra-space 0 --align 8192
-part /var/lib/containers --fstype ext4 --part-name data --label data --use-label --size 2G --align 8192
+part /var/lib/containers --fstype ext4 --part-name data --label data --use-label --size 2G --align 8192 --fsoptions "defaults,nofail,x-systemd.wants=lubancat-format-data.service,x-systemd.after=lubancat-format-data.service"

@@ -40,7 +40,8 @@ vendor 6.1,本层不覆盖 `PREFERRED_VERSION_linux-rockchip`。
 
 Hermes 已原生进入 rootfs,Podman 保留。Hermes 和 mihomo 的服务随镜像
 安装但默认不启用;凭据和代理配置由运行时提供,验通后人工 enable。
-当前 `/root/.hermes` 与 `/etc/mihomo` 不属于共享 data 分区。
+Wi-Fi 凭据、`/root/.hermes`、`/root/.local/state/hermes` 与 `/etc/mihomo`
+开机 bind 到共享 data(`/var/lib/containers/persistent`),不进镜像。
 
 OTA 只更新非活动 rootfs 槽,共享 boot、U-Boot 和 data 不在升级载荷内。
 2026-10-03 的构建与分发链已通过 CI;env 掉电持久化、实际安装切槽、
