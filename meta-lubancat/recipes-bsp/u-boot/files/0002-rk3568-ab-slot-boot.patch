@@ -110,17 +110,29 @@ diff --git a/include/configs/evb_rk3568.h b/include/configs/evb_rk3568.h
 index 8a2c604..ba8cb90 100644
 --- a/include/configs/evb_rk3568.h
 +++ b/include/configs/evb_rk3568.h
-@@ -22,8 +22,61 @@
+@@ -22,8 +22,74 @@
  /* A/B OTA: bootlimit/altbootcmd 安全网(见 common/autoboot.c)。 */
  #define CONFIG_BOOTCOUNT_LIMIT
  
 +/*
-+ * A/B OTA 槽位选择环境(阶段 2,RAUC 约定变量 + 选槽脚本,逐字定稿见
-+ * docs/plans/2026-09-26-ota-phase23.md 开放项 1 与 Task 2,不得改写)。
++ * A/B OTA 槽位选择环境(阶段 2)。变量名仍是 RAUC 那一套
++ * (docs/plans/2026-09-26-ota-phase23.md 开放项 1)。循环体不能用 break,
++ * 原因见下面。
 + * ab_boot 在 bootcmd 链最前执行:按 BOOT_ORDER 取首个 LEFT>0 的槽记入
-+ * 运行时变量 BOOT_SLOT(不落盘语义,saveenv 会在下轮脚本开头清掉);
-+ * upgrade_available=1 时对该槽 LEFT 减一并落盘(平时零写),减到 0 剔除
-+ * 出 BOOT_ORDER(双槽布局下只剩另一槽);全序皆不可用兜底 A。
++ * 运行时变量 BOOT_SLOT。upgrade_available 不是 1 时不 saveenv,所以正常
++ * 启动后 fw_printenv 看不到 BOOT_SLOT,这是脚本的落盘范围,不是选槽结果。
++ * upgrade_available=1 时对选中槽 LEFT 减一并落盘一次,减到 0 剔出
++ * BOOT_ORDER(双槽布局下只剩另一槽);全序皆不可用兜底 A。
++ *
++ * 不能用 break。vendor U-Boot 2017.09(JeffyCN/mirrors a93658f8)的
++ * hush 把普通命令交给 cmd_process();命令表里没有 break(common/cli_hush.c
++ * 的 builtin 表整段在 #ifndef __U_BOOT__ 里,builtin_not_written 编不进来)。
++ * find_cmd("break") 失败只打印 Unknown command 并返回,run_list_real()
++ * 的 for 没有中断标志,循环把 BOOT_ORDER 里每个 LEFT>0 的槽都写一遍。
++ * make_list_in() 按空格拆开 "A B",最后一次赋值是 B。默认序因此启动 B,
++ * 而且 BOOT_ORDER 本身不会被改掉(upgrade_available=0 不 saveenv)。
++ * 首个命中后用 test -z "${BOOT_SLOT}" 挡住后续迭代,减计放在同一次判断里,
++ * 每个启动只处理一个槽。
 + * altbootcmd 由 autoboot 的 bootcount>bootlimit 分支调用:对调 BOOT_ORDER
 + * (对被 LEFT 剪成单项的序也良定义)、复位 LEFT/bootcount 后重跑 bootcmd;
 + * upgrade_available 在此不复位——回退槽仍要过 Linux 自检才 mark-good。
@@ -141,17 +153,18 @@ index 8a2c604..ba8cb90 100644
 +	"if test -z \"${BOOT_B_LEFT}\"; then setenv BOOT_B_LEFT 3; fi; " \
 +	"setenv BOOT_SLOT \"\"; " \
 +	"for slot in ${BOOT_ORDER}; do " \
-+		"if test \"${slot}\" = \"A\" -a \"${BOOT_A_LEFT}\" -gt 0; then setenv BOOT_SLOT \"A\"; fi; " \
-+		"if test \"${slot}\" = \"B\" -a \"${BOOT_B_LEFT}\" -gt 0; then setenv BOOT_SLOT \"B\"; fi; " \
-+		"if test -n \"${BOOT_SLOT}\"; then " \
-+			"if test \"${upgrade_available}\" = \"1\"; then " \
-+				"if test \"${BOOT_SLOT}\" = \"A\"; then setexpr BOOT_A_LEFT ${BOOT_A_LEFT} - 1; fi; " \
-+				"if test \"${BOOT_SLOT}\" = \"B\"; then setexpr BOOT_B_LEFT ${BOOT_B_LEFT} - 1; fi; " \
-+				"if test \"${BOOT_SLOT}\" = \"A\" -a \"${BOOT_A_LEFT}\" = \"0\"; then setenv BOOT_ORDER \"B\"; fi; " \
-+				"if test \"${BOOT_SLOT}\" = \"B\" -a \"${BOOT_B_LEFT}\" = \"0\"; then setenv BOOT_ORDER \"A\"; fi; " \
-+				"saveenv; " \
++		"if test -z \"${BOOT_SLOT}\"; then " \
++			"if test \"${slot}\" = \"A\" -a \"${BOOT_A_LEFT}\" -gt 0; then setenv BOOT_SLOT \"A\"; fi; " \
++			"if test \"${slot}\" = \"B\" -a \"${BOOT_B_LEFT}\" -gt 0; then setenv BOOT_SLOT \"B\"; fi; " \
++			"if test -n \"${BOOT_SLOT}\"; then " \
++				"if test \"${upgrade_available}\" = \"1\"; then " \
++					"if test \"${BOOT_SLOT}\" = \"A\"; then setexpr BOOT_A_LEFT ${BOOT_A_LEFT} - 1; fi; " \
++					"if test \"${BOOT_SLOT}\" = \"B\"; then setexpr BOOT_B_LEFT ${BOOT_B_LEFT} - 1; fi; " \
++					"if test \"${BOOT_SLOT}\" = \"A\" -a \"${BOOT_A_LEFT}\" = \"0\"; then setenv BOOT_ORDER \"B\"; fi; " \
++					"if test \"${BOOT_SLOT}\" = \"B\" -a \"${BOOT_B_LEFT}\" = \"0\"; then setenv BOOT_ORDER \"A\"; fi; " \
++					"saveenv; " \
++				"fi; " \
 +			"fi; " \
-+			"break; " \
 +		"fi; " \
 +	"done; " \
 +	"if test -z \"${BOOT_SLOT}\"; then setenv BOOT_SLOT \"A\"; fi\0" \

@@ -2,7 +2,7 @@
 Description=wpa_supplicant(接口自动识别)
 Wants=network.target
 Before=network.target
-After=systemd-modules-load.service
+After=systemd-modules-load.service lubancat-persistent.service
 ConditionPathExists=/etc/wpa_supplicant/wpa_supplicant-wlan.conf
 
 [Service]

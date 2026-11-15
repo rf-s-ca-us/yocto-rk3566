@@ -13,9 +13,18 @@ OTA 阶段 2/3 的代码、CI 打包和 R2 stable 分发链已完成,实际升�
 与失败回退仍待上板。最新证据、待验项和操作入口见私有文档挂载点
 `docs/HANDOFF.md`;拉取代码后用 `git submodule update --init docs` 同步文档。
 
-OTA 当前只替换 rootfs。内核、DTB 与 U-Boot 更新需整盘重烧;
-共享 data 挂在 `/var/lib/containers`,Hermes 的 `/root/.hermes` 与
-`/etc/mihomo/config.yaml` 尚未迁到共享存储,换槽不会自动带走这些运行时配置。
+OTA 当前只替换 rootfs。内核、DTB 与 U-Boot 更新需整盘重烧。
+共享 data 挂在 `/var/lib/containers`(容器存储和 OTA 败记档)。Wi-Fi 凭据、
+`/root/.hermes`、`/root/.local/state/hermes` 与 `/etc/mihomo` 也放在这块盘上,
+开机 bind 回原来的路径,换槽还在。这些文件不进镜像、不进 CI。从旧槽升级时,
+bundle 在写盘前先把目标槽上已有的配置抢救出来;正在运行的槽是空的也不用空目录
+盖掉它。新槽首启再收入 data,空目录不会被 bind。
+
+#88 的 U-Boot 里 `ab_boot` 用了 `break`,而这版 vendor U-Boot 没有这条命令。
+`BOOT_ORDER=A B` 时循环会把 `BOOT_SLOT` 留在最后一个有剩余次数的槽,所以默认
+环境实际启动 B。这个选槽修在 U-Boot 里,rootfs OTA 带不走,要整盘重烧新的
+bootloader。`env default -a; saveenv; reset` 只清旧环境,清不掉这个脚本问题。
+镜像仍不会自动清环境:自动清会把已经配对的环境一起抹掉。
 
 ## 目录
 
@@ -84,8 +93,10 @@ CI 为 OTA 设置 `OTA_VERSION = "<run_number>-<sha8>"`;本地不设置时
 
 例如原 rootfs 容量为 2.40 GiB,调整后每槽约 6.40 GiB,两槽合计约 12.80 GiB。
 Rockchip `parameter` 保留最后的 `data:grow`,烧录时 data 分区使用剩余空间;
-直接写入 WIC 时,data 仍按布局中的 2 GiB 创建。data 文件系统的初始化/扩容
-仍按原流程处理,分区占满剩余空间不等于文件系统自动扩容。
+直接写入 WIC 时,data 仍按布局中的 2 GiB 创建。烧录包不携带 grow 分区里的
+文件系统,首启只把「没有签名、且前 1MiB 全为零」的 data 分区格式化成
+`LABEL=data` 的 ext4,文件系统大小等于当时的分区。已经有文件系统的分区
+不会被格式化。WIC 里预先做好的 ext4 因此保持 2 GiB,不会在首启被扩成整盘。
 
 这是新镜像的分区布局,不会在线调整已经运行的板子。重新烧录前备份需要保留的
 数据,并确认 eMMC 能容纳两份 rootfs、启动内容及所需的数据空间。

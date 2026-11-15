@@ -1,0 +1,16 @@
+[Unit]
+Description=把 Wi-Fi / Hermes / mihomo 配置绑到共享 data 分区
+DefaultDependencies=no
+After=var-lib-containers.mount
+Before=local-fs.target systemd-tmpfiles-setup.service
+ConditionPathIsMountPoint=/var/lib/containers
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# bind 必须出现在主机挂载命名空间里,不能关在服务自己的命名空间。
+PrivateMounts=no
+ExecStart=/usr/libexec/lubancat-persistent/mount-persistent
+
+[Install]
+WantedBy=local-fs.target

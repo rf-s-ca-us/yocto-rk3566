@@ -1,0 +1,23 @@
+#!/bin/sh
+# RAUC bundle 钩子。跑在「正在安装的那套系统」上,由 bundle 自带,
+# 所以从还没有 bind 的旧镜像升级时也能执行。
+# pre-install:写盘前把目标槽上已有的配置抢救出来。正在运行的槽如果是空的
+# (板子正跑在没有 Wi-Fi/Hermes/mihomo 的 B,完整配置在即将被覆盖的 A),
+# 只看运行中的根会把空树种进新槽,A 上的配置就没了。
+# post-install:运行中的树有文件就用它;否则用抢救出来的那份。两边都空则不写。
+set -eu
+
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/persistent-common.sh"
+
+case "${1:-}" in
+	slot-pre-install)
+		persist_hook_slot_pre_install
+		;;
+	slot-post-install)
+		persist_hook_slot_post_install
+		;;
+	*)
+		echo "rauc-slot-hook: 未处理的参数 ${1:-}" >&2
+		exit 1
+		;;
+esac
