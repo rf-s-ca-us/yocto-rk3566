@@ -8,6 +8,7 @@ FMT=$FILES/format-data-if-empty
 HOOK=$FILES/rauc-slot-hook
 COMMON=$FILES/persistent-common.sh
 MOUNT=$FILES/mount-persistent
+SEAL=$FILES/seal-data-store
 
 fail=0
 pass=0
@@ -42,7 +43,7 @@ mode_of() {
 }
 
 echo "== syntax"
-for f in "$FMT" "$HOOK" "$MOUNT" "$COMMON" \
+for f in "$FMT" "$HOOK" "$MOUNT" "$COMMON" "$SEAL" \
 	"$ROOT/meta-lubancat/recipes-core/ota/files/ota-selfcheck" \
 	"$ROOT/meta-lubancat/recipes-core/ota/files/ota-update"; do
 	if sh -n "$f"; then
@@ -97,15 +98,16 @@ EOF
 	chmod 0755 "$dir/blkid"
 }
 
+# 始终返回 0。格式化脚本自己的退出码在 RUN_RC,避免 set -e 把拒绝路径当成测试崩溃。
 run_format() {
 	name=$1
 	shift
 	set +e
 	out=$(env "$@" "$FMT" 2>&1)
-	rc=$?
+	RUN_RC=$?
 	set -e
 	printf '%s\n' "$out" > "$workdir/last.out"
-	return "$rc"
+	return 0
 }
 
 zero_file() {
@@ -119,10 +121,11 @@ make_fake_mke2fs "$bin" 0
 make_fake_blkid "$bin" 2
 img=$workdir/blank.img
 zero_file "$img"
-if run_format blank \
+run_format blank \
 	PATH="$bin:/usr/sbin:/usr/bin:/bin" \
 	DATA_FORMAT_ALLOW_FILE=1 \
-	DATA_DEV="$img"; then
+	DATA_DEV="$img"
+if [ "$RUN_RC" -eq 0 ]; then
 	ok "空白文件退出 0"
 else
 	bad "空白文件退出 0" "$(cat "$workdir/last.out")"
@@ -147,14 +150,13 @@ refuse() {
 	shift 2
 	mkdir -p "$b"
 	make_fake_mke2fs "$b" 0
-	if run_format "$name" PATH="$b:/usr/sbin:/usr/bin:/bin" "$@"; then
-		if [ -s "$b/mke2fs.log" ]; then
-			bad "$name 仍调用了 mke2fs" "$(cat "$b/mke2fs.log")" "$(cat "$workdir/last.out")"
-		else
-			ok "$name"
-		fi
+	run_format "$name" PATH="$b:/usr/sbin:/usr/bin:/bin" "$@"
+	if [ "$RUN_RC" -eq 0 ]; then
+		bad "$name 本应拒绝并返回非 0" "$(cat "$workdir/last.out")"
+	elif [ -s "$b/mke2fs.log" ]; then
+		bad "$name 仍调用了 mke2fs" "$(cat "$b/mke2fs.log")" "$(cat "$workdir/last.out")"
 	else
-		bad "$name 退出非 0" "$(cat "$workdir/last.out")"
+		ok "$name"
 	fi
 }
 
@@ -190,7 +192,7 @@ zero_file "$edge"
 printf '\001' | dd of="$edge" bs=1 seek=1048575 conv=notrunc status=none
 refuse "1MiB 最后一个字节非零" "$workdir/bin-edge" DATA_FORMAT_ALLOW_FILE=1 DATA_DEV="$edge"
 
-echo "== byte just past 1MiB is outside the checked prefix"
+echo "== a non-zero byte past 1MiB still blocks formatting"
 bin=$workdir/bin-past
 mkdir -p "$bin"
 make_fake_mke2fs "$bin" 0
@@ -198,17 +200,14 @@ make_fake_blkid "$bin" 2
 past=$workdir/past.img
 zero_file "$past"
 printf '\001' | dd of="$past" bs=1 seek=1048576 conv=notrunc status=none
-if run_format past \
+run_format past \
 	PATH="$bin:/usr/sbin:/usr/bin:/bin" \
 	DATA_FORMAT_ALLOW_FILE=1 \
-	DATA_DEV="$past"; then
-	if [ -s "$bin/mke2fs.log" ]; then
-		ok "1MiB 之后的字节不阻止格式化"
-	else
-		bad "1MiB 之后的字节不阻止格式化" "$(cat "$workdir/last.out")"
-	fi
+	DATA_DEV="$past"
+if [ "$RUN_RC" -eq 0 ] || [ -s "$bin/mke2fs.log" ]; then
+	bad "1MiB 之后的非零字节仍被格式化" "$(cat "$bin/mke2fs.log" 2>/dev/null || true)" "$(cat "$workdir/last.out")"
 else
-	bad "1MiB 边界用例退出非 0" "$(cat "$workdir/last.out")"
+	ok "1MiB 之后的非零字节拒绝格式化"
 fi
 
 echo "== real ext4 is left alone"
@@ -221,20 +220,19 @@ if mkfs.ext4 -F -q -L populated "$ext"; then
 	b=$workdir/bin-ext4
 	mkdir -p "$b"
 	make_fake_mke2fs "$b" 0
-	if run_format ext4 \
+	run_format ext4 \
 		PATH="$b:/usr/sbin:/usr/bin:/bin" \
 		DATA_FORMAT_ALLOW_FILE=1 \
-		DATA_DEV="$ext"; then
-		if [ -s "$b/mke2fs.log" ]; then
-			bad "已有 ext4 仍被格式化" "$(cat "$b/mke2fs.log")" "$(cat "$workdir/last.out")"
-		else
-			ok "已有 ext4 不格式化"
-		fi
-		label=$(blkid -p -s LABEL -o value "$ext" 2>/dev/null || true)
-		expect_eq "原卷标还在" populated "$label"
+		DATA_DEV="$ext"
+	if [ -s "$b/mke2fs.log" ]; then
+		bad "已有 ext4 仍被格式化" "$(cat "$b/mke2fs.log")" "$(cat "$workdir/last.out")"
+	elif [ "$RUN_RC" -eq 0 ]; then
+		bad "已有其它卷标的 ext4 被当成成功" "$(cat "$workdir/last.out")"
 	else
-		bad "已有 ext4 用例退出非 0" "$(cat "$workdir/last.out")"
+		ok "已有 ext4 不格式化"
 	fi
+	label=$(blkid -p -D -s LABEL -o value "$ext" 2>/dev/null || true)
+	expect_eq "原卷标还在" populated "$label"
 else
 	bad "测试无法创建 ext4"
 fi
@@ -536,6 +534,289 @@ if unshare --user --map-root-user --mount true >/dev/null 2>&1; then
 	fi
 else
 	echo "  skip 抢救测试:unshare 不可用"
+fi
+
+echo "== real blkid: empty GPT partition is not a filesystem"
+if ! sudo -n true >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+	bad "需要免密 sudo 和 python3 才能复现空分区上的 blkid"
+else
+	gpt=$workdir/gpt
+	mkdir -p "$gpt"
+	python3 - "$gpt" << 'PY'
+import struct, sys, uuid, zlib, pathlib
+out = pathlib.Path(sys.argv[1])
+SS = 512
+
+def crc(b):
+    return zlib.crc32(b) & 0xFFFFFFFF
+
+def guid(s):
+    return uuid.UUID(s).bytes_le
+
+def header(my, alt, first, last, disk, entry_lba, entries):
+    h = bytearray(512)
+    h[0:8] = b"EFI PART"
+    struct.pack_into("<I", h, 8, 0x00010000)
+    struct.pack_into("<I", h, 12, 92)
+    struct.pack_into("<Q", h, 24, my)
+    struct.pack_into("<Q", h, 32, alt)
+    struct.pack_into("<Q", h, 40, first)
+    struct.pack_into("<Q", h, 48, last)
+    h[56:72] = guid(disk)
+    struct.pack_into("<Q", h, 72, entry_lba)
+    struct.pack_into("<I", h, 80, 128)
+    struct.pack_into("<I", h, 84, 128)
+    struct.pack_into("<I", h, 88, crc(entries))
+    struct.pack_into("<I", h, 16, crc(bytes(h[:92])))
+    return bytes(h)
+
+def entry(start, end, name):
+    e = bytearray(128)
+    e[0:16] = guid("0fc63daf-8483-4772-8e79-3d69d8477de4")
+    e[16:32] = guid(str(uuid.uuid4()))
+    struct.pack_into("<Q", e, 32, start)
+    struct.pack_into("<Q", e, 40, end)
+    nb = name.encode("utf-16le")
+    e[56:56+len(nb)] = nb
+    return bytes(e)
+
+def entries(items):
+    raw = b"".join(items)
+    return raw + b"\x00" * (128 * 128 - len(raw))
+
+def build(path, total, part_end):
+    disk = str(uuid.uuid4())
+    ent = entries([entry(2048, part_end, "data")])
+    first, last = 34, total - 34 - 1
+    primary = header(1, total - 1, first, last, disk, 2, ent)
+    backup_lba = total - 33
+    backup = header(total - 1, 1, first, last, disk, backup_lba, ent)
+    img = bytearray(total * SS)
+    img[510] = 0x55
+    img[511] = 0xAA
+    img[450] = 0xEE
+    struct.pack_into("<I", img, 454, 1)
+    struct.pack_into("<I", img, 458, min(total - 1, 0xFFFFFFFF))
+    img[SS:2*SS] = primary
+    img[2*SS:2*SS+len(ent)] = ent
+    img[backup_lba*SS:backup_lba*SS+len(ent)] = ent
+    img[(total-1)*SS:(total-1)*SS+512] = backup
+    path.write_bytes(img)
+
+total = 16384
+build(out / "std.img", total, total - 34 - 1)
+build(out / "over.img", total, total - 1)
+std = (out / "std.img").read_bytes()
+over = (out / "over.img").read_bytes()
+(out / "over-part.bin").write_bytes(over[2048*SS:total*SS])
+PY
+	loops=
+	cleanup_loops() {
+		for d in $loops; do
+			sudo -n losetup -d "$d" 2>/dev/null || true
+		done
+	}
+	trap 'cleanup_loops; rm -rf "$workdir"; rm -rf /tmp/ov-* 2>/dev/null || true' EXIT
+	dev=$(sudo -n losetup -f --show "$gpt/std.img")
+	loops="$dev"
+	sudo -n partx -u "$dev" >/dev/null 2>&1 || sudo -n partx -a "$dev" >/dev/null 2>&1 || true
+	if [ ! -b "${dev}p1" ]; then
+		bad "标准 GPT 没有分出分区"
+	else
+		part=${dev}p1
+		back=$(sudo -n cat "/sys/block/$(basename "$dev")/loop/backing_file")
+		if [ "$back" != "$gpt/std.img" ]; then
+			bad "loop 后端不是测试镜像" "$back"
+		else
+			set +e
+			sudo -n blkid -p "$part" >/dev/null 2>&1
+			plain=$?
+			sudo -n blkid -p -D "$part" >/dev/null 2>&1
+			suppressed=$?
+			set -e
+			if [ "$plain" -eq 0 ] && [ "$suppressed" -eq 2 ]; then
+				ok "空分区 blkid -p 退出 0,加 -D 后退出 2"
+			else
+				bad "空分区 blkid 语义与实测不符" "plain=$plain -D=$suppressed"
+			fi
+			set +e
+			out=$(sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" 2>&1)
+			rc=$?
+			set -e
+			printf '%s\n' "$out" > "$workdir/last.out"
+			label=$(sudo -n blkid -p -D -s LABEL -o value "$part" 2>/dev/null || true)
+			if [ "$rc" -eq 0 ] && [ "$label" = data ]; then
+				ok "空的 data 分区被格式化一次"
+			else
+				bad "空的 data 分区被格式化一次" "$out"
+			fi
+			sudo -n mkdir -p "$gpt/mnt"
+			if sudo -n mount "$part" "$gpt/mnt"; then
+				echo keep-me | sudo -n tee "$gpt/mnt/marker" >/dev/null
+				sudo -n umount "$gpt/mnt"
+				set +e
+				sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+				rc=$?
+				set -e
+				sudo -n mount "$part" "$gpt/mnt"
+				if [ "$rc" -eq 0 ] && [ "$(cat "$gpt/mnt/marker")" = keep-me ]; then
+					ok "已有数据的 data 分区再次运行不重写"
+				else
+					bad "已有数据的 data 分区再次运行不重写"
+				fi
+				sudo -n umount "$gpt/mnt"
+				sudo -n mount "$part" "$gpt/mnt"
+				set +e
+				sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+				rc=$?
+				set -e
+				if [ "$rc" -ne 0 ] && [ "$(cat "$gpt/mnt/marker")" = keep-me ]; then
+					ok "已挂载时拒绝格式化"
+				else
+					bad "已挂载时拒绝格式化" "rc=$rc"
+				fi
+				set +e
+				out=$(sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_MNT="$gpt/mnt" "$SEAL" 2>&1)
+				rc=$?
+				set -e
+				echo still | sudo -n tee "$gpt/mnt/more" >/dev/null
+				if [ "$rc" -eq 0 ] && [ "$(cat "$gpt/mnt/more")" = still ]; then
+					ok "已挂上的 data ext4 不被改成只读"
+				else
+					bad "已挂上的 data ext4 不被改成只读" "rc=$rc" "$out"
+				fi
+				sudo -n umount "$gpt/mnt"
+			else
+				bad "测试分区无法挂载"
+			fi
+			# 擦回全零后再放一个非 ext 签名和一处中间数据。
+			secs=$(cat "/sys/class/block/$(basename "$part")/size")
+			sudo -n dd if=/dev/zero of="$part" bs=512 count="$secs" status=none
+			printf 'LUKS\272\276\000\001' | sudo -n dd of="$part" bs=1 conv=notrunc status=none
+			set +e
+			sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+			rc=$?
+			set -e
+			kind=$(sudo -n blkid -p -D -s TYPE -o value "$part" 2>/dev/null || true)
+			if [ "$rc" -ne 0 ] && [ "$kind" = crypto_LUKS ]; then
+				ok "LUKS 签名不格式化"
+			else
+				bad "LUKS 签名不格式化" "rc=$rc type=$kind"
+			fi
+			secs=$(cat "/sys/class/block/$(basename "$part")/size")
+			sudo -n dd if=/dev/zero of="$part" bs=512 count="$secs" status=none
+			printf '\001' | sudo -n dd of="$part" bs=1 seek=2097152 conv=notrunc status=none
+			set +e
+			sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+			rc=$?
+			set -e
+			kind=$(sudo -n blkid -p -D -s TYPE -o value "$part" 2>/dev/null || true)
+			byte=$(sudo -n dd if="$part" bs=1 skip=2097152 count=1 status=none | od -An -tu1 | tr -d ' ')
+			if [ "$rc" -ne 0 ] && [ -z "$kind" ] && [ "$byte" = 1 ]; then
+				ok "无 TYPE 但中间有数据时不格式化"
+			else
+				bad "无 TYPE 但中间有数据时不格式化" "rc=$rc type=${kind:-<空>} byte=$byte"
+			fi
+		fi
+	fi
+	tailfile=$gpt/over-part.bin
+	before=$(wc -c < "$tailfile" | tr -d ' ')
+	cp "$tailfile" "$gpt/over-copy.bin"
+	set +e
+	out=$(env PATH="/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gpt/over-copy.bin" "$FMT" 2>&1)
+	rc=$?
+	set -e
+	printf '%s\n' "$out" > "$workdir/last.out"
+	label=$(blkid -p -D -s LABEL -o value "$gpt/over-copy.bin" 2>/dev/null || true)
+	python3 - "$tailfile" "$gpt/over-copy.bin" << 'PY'
+import sys
+a=open(sys.argv[1],"rb").read()
+b=open(sys.argv[2],"rb").read()
+tail=33*512
+open("/tmp/data-tail-same","w").write("yes" if a[-tail:]==b[-tail:] and len(a)==len(b) else "no")
+PY
+	same=$(cat /tmp/data-tail-same)
+	rm -f /tmp/data-tail-same
+	if [ "$rc" -eq 0 ] && [ "$label" = data ] && [ "$same" = yes ]; then
+		ok "只含备份 GPT 尾部的空白分区被格式化且尾部保留"
+	else
+		bad "只含备份 GPT 尾部的空白分区被格式化且尾部保留" "rc=$rc label=$label tail=$same" "$out"
+	fi
+	set +e
+	out=$(env PATH="/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gpt/over-copy.bin" "$FMT" 2>&1)
+	rc=$?
+	set -e
+	if [ "$rc" -eq 0 ]; then
+		ok "备份 GPT 尾部的分区第二次不重写"
+	else
+		bad "备份 GPT 尾部的分区第二次不重写" "$out"
+	fi
+	# 校验和坏掉的尾部不能格式化。
+	cp "$tailfile" "$gpt/bad-tail.bin"
+	dd if=/dev/zero of="$gpt/bad-tail.bin" bs=1 seek=$((before - 512 + 16)) count=4 conv=notrunc status=none
+	b=$workdir/bin-bad-tail
+	mkdir -p "$b"
+	make_fake_mke2fs "$b" 0
+	run_format bad-tail PATH="$b:/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gpt/bad-tail.bin"
+	if [ "$RUN_RC" -ne 0 ] && [ ! -s "$b/mke2fs.log" ]; then
+		ok "备份 GPT 校验失败时不格式化"
+	else
+		bad "备份 GPT 校验失败时不格式化" "$(cat "$workdir/last.out")"
+	fi
+	noperm=$gpt/noperm.bin
+	dd if=/dev/zero of="$noperm" bs=1048576 count=2 status=none
+	chmod 000 "$noperm"
+	b=$workdir/bin-io
+	mkdir -p "$b"
+	make_fake_mke2fs "$b" 0
+	run_format io PATH="$b:/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_DEV="$noperm"
+	chmod 644 "$noperm" || true
+	if [ "$RUN_RC" -ne 0 ] && [ ! -s "$b/mke2fs.log" ]; then
+		ok "读不到设备时不格式化"
+	else
+		bad "读不到设备时不格式化" "$(cat "$workdir/last.out")"
+	fi
+fi
+
+echo "== data unavailable is sealed read-only"
+if unshare --user --map-root-user --mount true >/dev/null 2>&1; then
+	set +e
+	unshare --user --map-root-user --mount sh -c '
+		set -eu
+		mount -t tmpfs tmpfs /var
+		mkdir -p /var/lib/containers/payload
+		echo spill > /var/lib/containers/payload/x
+		set +e
+		'"$SEAL"'
+		rc=$?
+		set -e
+		test "$rc" -ne 0
+		if touch /var/lib/containers/payload/y 2>/dev/null; then
+			echo "unsealed directory accepted a write" >&2
+			exit 1
+		fi
+		umount /var/lib/containers
+		mkdir -p /var/lib/containers
+		mount -t tmpfs tmpfs /var/lib/containers
+		set +e
+		'"$SEAL"'
+		rc=$?
+		set -e
+		test "$rc" -ne 0
+		if touch /var/lib/containers/z 2>/dev/null; then
+			echo "wrong mount stayed writable" >&2
+			exit 1
+		fi
+	'
+	rc=$?
+	set -e
+	if [ "$rc" -eq 0 ]; then
+		ok "data 不可用时目录或错误挂载变为只读"
+	else
+		bad "data 不可用时目录或错误挂载变为只读"
+	fi
+else
+	echo "  skip 封闭测试:unshare 不可用"
 fi
 
 echo

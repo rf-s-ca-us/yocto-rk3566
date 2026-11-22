@@ -1,18 +1,197 @@
 #!/bin/sh
-# 只在 GPT 分区名 data 上创建 ext4,而且必须同时满足:
-#   blkid -p 没有签名(退出码恰好是 2,不是其它错误);
-#   偏移 1080 处不是 ext 超级块魔数;
-#   设备至少有 1MiB,且这 1MiB 全是 0。
-# 任何一条不满足都退出 0、什么都不写。
-# mke2fs 不加强制开关。探测如果漏了,它自己仍会拒绝(标准输入是 /dev/null,
-# 答不了确认)。失败不重试。
+# 只在分区名恰好是 data、且即将写入的范围能被证明是空白时创建 ext4。
+#
+# blkid -p 不加 -D 时,空分区也会退出 0:它打印的是内核给的分区表项
+# (PART_ENTRY_NAME / PART_ENTRY_UUID),不是文件系统。TYPE 是 blkid 根据
+# 签名归出来的类,不是超级块里的字段;没有 TYPE、或者偏移 1080 的魔数为 0,
+# 都不能当成「没有用户数据」。
+#
+# 允许写入的唯一情况:blkid -p -D 没有报错且没有识别出内容,并且将写入的
+# 字节全是 0。末尾若是校验通过的标准备份 GPT(128 项),那段不写入,它前面
+# 仍须全是 0。其它文件系统、加密、损坏、对不上的 GPT、I/O 错误都不格式化。
+# mke2fs 不加强制开关,失败不重试。DATA_FORMAT_ALLOW_FILE 只给宿主机测试用。
 set -eu
 
 DEV=${DATA_DEV:-/dev/disk/by-partlabel/data}
-PREFIX=1048576
+MIN_BYTES=1048576
+CHUNK=8388608
 
 log() {
 	echo "format-data: $*"
+}
+
+read_le32() {
+	od -An -tu4 -j "$2" -N 4 "$1" | awk '{print $1}'
+}
+
+crc32_92() {
+	od -An -tu1 -N 92 "$1" | awk '
+		function bxor(a, b,    i, r, xa, xb) {
+			r = 0
+			for (i = 0; i < 32; i++) {
+				xa = a % 2
+				xb = b % 2
+				if (xa != xb) r += 2 ^ i
+				a = int(a / 2)
+				b = int(b / 2)
+			}
+			return r
+		}
+		{
+			for (i = 1; i <= NF; i++) byte[++n] = $i + 0
+		}
+		END {
+			if (n < 92) exit 2
+			byte[17] = 0
+			byte[18] = 0
+			byte[19] = 0
+			byte[20] = 0
+			crc = 4294967295
+			for (i = 1; i <= 92; i++) {
+				crc = bxor(crc, byte[i])
+				for (k = 0; k < 8; k++) {
+					if (crc % 2) crc = bxor(int(crc / 2), 3988292384)
+					else crc = int(crc / 2)
+				}
+			}
+			printf "%u\n", bxor(crc, 4294967295)
+		}
+	'
+}
+
+# 0: 打印可写入的字节数。1: 末尾像 GPT 但校验不过,调用方不得格式化。
+writable_bytes() {
+	dev=$1
+	bytes=$2
+	part_start=$3
+	if [ $((bytes % 512)) -ne 0 ] || [ "$bytes" -lt 1024 ]; then
+		return 1
+	fi
+	sectors=$((bytes / 512))
+	hdr=$(mktemp)
+	dd if="$dev" of="$hdr" bs=512 count=1 skip=$((sectors - 1)) status=none 2>/dev/null || {
+		rm -f "$hdr"
+		return 1
+	}
+	sig=$(dd if="$hdr" bs=8 count=1 status=none 2>/dev/null || true)
+	if [ "$sig" != "EFI PART" ]; then
+		rm -f "$hdr"
+		echo "$bytes"
+		return 0
+	fi
+	rev=$(read_le32 "$hdr" 8)
+	hsz=$(read_le32 "$hdr" 12)
+	stored=$(read_le32 "$hdr" 16)
+	calc=$(crc32_92 "$hdr") || {
+		rm -f "$hdr"
+		return 1
+	}
+	my_hi=$(read_le32 "$hdr" 28)
+	my_lo=$(read_le32 "$hdr" 24)
+	ent_hi=$(read_le32 "$hdr" 76)
+	ent_lo=$(read_le32 "$hdr" 72)
+	nent=$(read_le32 "$hdr" 80)
+	esz=$(read_le32 "$hdr" 84)
+	rm -f "$hdr"
+	if [ "$rev" != 65536 ] || [ "$hsz" != 92 ] || [ "$stored" != "$calc" ]; then
+		return 1
+	fi
+	if [ "$my_hi" != 0 ] || [ "$ent_hi" != 0 ] || [ "$esz" != 128 ] || [ "$nent" != 128 ]; then
+		return 1
+	fi
+	expect=$((part_start + sectors - 1))
+	if [ "$my_lo" != "$expect" ] || [ "$ent_lo" -lt "$part_start" ]; then
+		return 1
+	fi
+	rel=$((ent_lo - part_start))
+	array_off=$((rel * 512))
+	array_len=$((nent * esz))
+	if [ "$array_off" -lt $((bytes - MIN_BYTES)) ]; then
+		return 1
+	fi
+	if [ $((array_off + array_len)) -gt $((bytes - 512)) ]; then
+		return 1
+	fi
+	echo "$array_off"
+	return 0
+}
+
+range_is_zero() {
+	dev=$1
+	bytes=$2
+	off=0
+	tmp=$(mktemp)
+	while [ "$off" -lt "$bytes" ]; do
+		n=$CHUNK
+		if [ $((off + n)) -gt "$bytes" ]; then
+			n=$((bytes - off))
+		fi
+		if [ $((off % 4096)) -eq 0 ] && [ $((n % 4096)) -eq 0 ]; then
+			dd if="$dev" of="$tmp" bs=4096 skip=$((off / 4096)) count=$((n / 4096)) status=none 2>/dev/null || {
+				rm -f "$tmp"
+				return 2
+			}
+		else
+			dd if="$dev" of="$tmp" bs=1 skip="$off" count="$n" status=none 2>/dev/null || {
+				rm -f "$tmp"
+				return 2
+			}
+		fi
+		got=$(wc -c < "$tmp" | tr -d ' ')
+		if [ "$got" -ne "$n" ]; then
+			rm -f "$tmp"
+			return 2
+		fi
+		if tr -d '\000' < "$tmp" | grep -q .; then
+			rm -f "$tmp"
+			return 1
+		fi
+		off=$((off + n))
+	done
+	rm -f "$tmp"
+	return 0
+}
+
+part_base() {
+	basename "$(readlink -f "$1")"
+}
+
+# 内核 uevent 的 PARTNAME 和 blkid 的 PART_ENTRY_NAME 是同一条 GPT 分区名。
+# loop 上有的内核只给后者。两者都空才算没有名字。
+part_name() {
+	base=$1
+	dev=$2
+	name=$(awk -F= '$1 == "PARTNAME" { print $2; exit }' "/sys/class/block/$base/uevent" 2>/dev/null || true)
+	if [ -n "$name" ]; then
+		printf '%s\n' "$name"
+		return 0
+	fi
+	blkid -p -s PART_ENTRY_NAME -o value "$dev" 2>/dev/null || true
+}
+
+device_in_use() {
+	base=$1
+	canon=$(readlink -f "$DEV")
+	if [ -d "/sys/class/block/$base/holders" ] && [ -n "$(ls -A "/sys/class/block/$base/holders" 2>/dev/null)" ]; then
+		log "$DEV 仍被占用,拒绝格式化"
+		return 0
+	fi
+	hit=$(awk '$1 ~ /^\// { print $1 }' /proc/mounts | while read -r src; do
+		if [ -e "$src" ] && [ "$(readlink -f "$src" 2>/dev/null || true)" = "$canon" ]; then
+			echo yes
+			break
+		fi
+	done)
+	if [ -n "$hit" ]; then
+		log "$DEV 已挂载,拒绝格式化"
+		return 0
+	fi
+	root=$(awk '$2 == "/" { print $1; exit }' /proc/mounts)
+	if [ -n "$root" ] && [ -e "$root" ] && [ "$(readlink -f "$root" 2>/dev/null || true)" = "$canon" ]; then
+		log "$DEV 是根设备,拒绝格式化"
+		return 0
+	fi
+	return 1
 }
 
 if [ ! -e "$DEV" ] && [ "$DEV" = /dev/disk/by-partlabel/data ]; then
@@ -27,74 +206,162 @@ if [ ! -e "$DEV" ] && [ "$DEV" = /dev/disk/by-partlabel/data ]; then
 fi
 
 if [ ! -e "$DEV" ]; then
-	log "没有 $DEV,跳过"
-	exit 0
+	log "没有 $DEV,拒绝格式化"
+	exit 1
 fi
 
-if [ ! -b "$DEV" ] && [ "${DATA_FORMAT_ALLOW_FILE:-}" != 1 ]; then
+part_start=0
+if [ -b "$DEV" ]; then
+	base=$(part_base "$DEV")
+	if [ ! -f "/sys/class/block/$base/partition" ]; then
+		log "$DEV 不是分区,拒绝格式化"
+		exit 1
+	fi
+	name=$(part_name "$base" "$DEV")
+	if [ "$name" != data ]; then
+		log "$DEV 的分区名是 ${name:-<空>},拒绝格式化"
+		exit 1
+	fi
+	same=0
+	for ev in /sys/class/block/*/partition; do
+		[ -f "$ev" ] || continue
+		other=$(basename "$(dirname "$ev")")
+		n=$(part_name "$other" "/dev/$other")
+		if [ "$n" = data ]; then
+			same=$((same + 1))
+		fi
+	done
+	if [ "$same" -ne 1 ]; then
+		log "名为 data 的分区有 ${same} 个,拒绝格式化"
+		exit 1
+	fi
+	start=$(cat "/sys/class/block/$base/start")
+	secs=$(cat "/sys/class/block/$base/size")
+	log "目标 $base 起点 ${start} 扇区,长度 ${secs} 扇区"
+	part_start=$start
+	if device_in_use "$base"; then
+		exit 1
+	fi
+elif [ "${DATA_FORMAT_ALLOW_FILE:-}" != 1 ]; then
 	log "$DEV 不是块设备,拒绝格式化"
-	exit 0
+	exit 1
+else
+	part_start=${DATA_PART_START:-0}
 fi
 
 if ! command -v blkid >/dev/null 2>&1; then
 	log "没有 blkid,拒绝格式化"
-	exit 0
+	exit 1
 fi
 
-rc=0
-blkid -p "$DEV" >/dev/null 2>&1 || rc=$?
-if [ "$rc" -eq 0 ]; then
-	log "$DEV 已有 blkid 签名,不格式化"
+err=$(mktemp)
+set +e
+probe=$(blkid -p -D -o export "$DEV" 2>"$err")
+rc=$?
+set -e
+if [ -s "$err" ]; then
+	log "blkid -p -D $DEV 报错,拒绝格式化"
+	cat "$err" >&2 || true
+	rm -f "$err"
+	exit 1
+fi
+rm -f "$err"
+
+TYPE=$(printf '%s\n' "$probe" | awk -F= '$1 == "TYPE" { print substr($0, 6); exit }')
+USAGE=$(printf '%s\n' "$probe" | awk -F= '$1 == "USAGE" { print substr($0, 7); exit }')
+LABEL=$(printf '%s\n' "$probe" | awk -F= '$1 == "LABEL" { print substr($0, 7); exit }')
+PTTYPE=$(printf '%s\n' "$probe" | awk -F= '$1 == "PTTYPE" { print substr($0, 8); exit }')
+
+if [ "$rc" -eq 0 ] && [ "$TYPE" = ext4 ] && [ "$USAGE" = filesystem ] && [ "$LABEL" = data ]; then
+	log "$DEV 已是 ext4 LABEL=data,不格式化"
 	exit 0
 fi
+if [ "$rc" -eq 0 ]; then
+	log "探测到 TYPE=${TYPE:-<空>} USAGE=${USAGE:-<空>} LABEL=${LABEL:-<空>} PTTYPE=${PTTYPE:-<空>},不格式化"
+	exit 1
+fi
 if [ "$rc" -ne 2 ]; then
-	log "blkid -p $DEV 退出 $rc,拒绝格式化"
-	exit 0
+	log "blkid -p -D $DEV 退出 $rc,拒绝格式化"
+	exit 1
 fi
 
 magic=$(dd if="$DEV" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)
 if [ "$magic" = "53ef" ]; then
 	log "$DEV 有 ext 超级块魔数,不格式化"
-	exit 0
+	exit 1
 fi
 
-tmp=$(mktemp)
-dd if="$DEV" of="$tmp" bs="$PREFIX" count=1 2>/dev/null || {
-	log "读取 $DEV 前缀失败,拒绝格式化"
-	rm -f "$tmp"
-	exit 0
-}
-size=$(wc -c < "$tmp" | tr -d ' ')
-if [ "$size" -ne "$PREFIX" ]; then
-	log "$DEV 可读前缀只有 ${size} 字节,拒绝格式化"
-	rm -f "$tmp"
-	exit 0
+if [ -b "$DEV" ]; then
+	if ! command -v blockdev >/dev/null 2>&1; then
+		log "没有 blockdev,拒绝格式化"
+		exit 1
+	fi
+	dev_bytes=$(blockdev --getsize64 "$DEV")
+else
+	dev_bytes=$(wc -c < "$DEV" | tr -d ' ')
 fi
-if tr -d '\000' < "$tmp" | grep -q .; then
-	log "$DEV 前 1MiB 非全零,拒绝格式化"
-	rm -f "$tmp"
-	exit 0
+
+set +e
+limit=$(writable_bytes "$DEV" "$dev_bytes" "$part_start")
+wrc=$?
+set -e
+if [ "$wrc" -ne 0 ] || [ -z "$limit" ]; then
+	log "$DEV 末尾的 GPT 校验不过,拒绝格式化"
+	exit 1
 fi
-rm -f "$tmp"
+if [ "$limit" -lt "$MIN_BYTES" ]; then
+	log "$DEV 可写入范围只有 ${limit} 字节,拒绝格式化"
+	exit 1
+fi
+
+set +e
+range_is_zero "$DEV" "$limit"
+zrc=$?
+set -e
+if [ "$zrc" -eq 1 ]; then
+	log "$DEV 可写入范围不是全零,拒绝格式化"
+	exit 1
+fi
+if [ "$zrc" -ne 0 ]; then
+	log "读取 $DEV 失败,拒绝格式化"
+	exit 1
+fi
+
+if [ -b "$DEV" ] && device_in_use "$(part_base "$DEV")"; then
+	exit 1
+fi
 
 if ! command -v mke2fs >/dev/null 2>&1; then
 	log "没有 mke2fs,拒绝格式化"
-	exit 0
+	exit 1
 fi
 
 log "确认 $DEV 空白,创建 ext4 LABEL=data"
-# nodiscard:整盘 TRIM 在大 eMMC 上会拖住首启,空白分区不需要先擦。
-# 不加重试。标准输入关掉,避免任何确认提示被当成同意。
-mke2fs -t ext4 -L data -E nodiscard "$DEV" </dev/null
+if [ "$limit" -eq "$dev_bytes" ]; then
+	mke2fs -t ext4 -L data -E nodiscard "$DEV" </dev/null
+else
+	blocks=$((limit / 4096))
+	# 缩小文件系统,末尾已校验的备份 GPT 不在写入范围内。
+	mke2fs -t ext4 -b 4096 -L data -E nodiscard "$DEV" "$blocks" </dev/null
+fi
 
 if [ -b "$DEV" ] && command -v blockdev >/dev/null 2>&1; then
 	blockdev --flushbufs "$DEV" || true
 fi
 
-label=$(blkid -p -s LABEL -o value "$DEV" 2>/dev/null || true)
+label=$(blkid -p -D -s LABEL -o value "$DEV" 2>/dev/null || true)
 if [ "$label" != data ]; then
 	log "格式化后 LABEL=${label:-<空>},期望 data"
 	exit 1
+fi
+
+if [ "$limit" -ne "$dev_bytes" ]; then
+	# 只取签名 8 字节。整扇区里签名后面就是 0,放进 shell 变量会被截断或带上后续字节。
+	sig=$(dd if="$DEV" bs=1 skip=$((dev_bytes - 512)) count=8 status=none 2>/dev/null || true)
+	if [ "$sig" != "EFI PART" ]; then
+		log "格式化改写了末尾的备份 GPT"
+		exit 1
+	fi
 fi
 
 if [ -b "$DEV" ] && command -v udevadm >/dev/null 2>&1; then

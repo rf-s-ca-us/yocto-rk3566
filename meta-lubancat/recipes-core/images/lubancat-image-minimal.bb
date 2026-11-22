@@ -74,7 +74,8 @@ IMAGE_INSTALL:append = " hermes-python hermes-agent lubancat-nodejs ripgrep miho
 #   nofail:万一将来的布局没有 data 分区,不让启动卡在挂载等待。
 #   mke2fs —— update.img 的 data:grow 不带文件系统字节,首启格式化要用它。
 #   谁来调用、什么情况下允许写盘,见 lubancat-persistent 的 format-data-if-empty:
-#   已有签名或前 1MiB 不是全零,就不格式化。
+#   分区名必须是 data,内容探测不能只看 blkid -p 的退出码,将写入的范围须全为零。
+#   data 没挂上时 seal-data-store 把该目录改成只读,避免写进当前槽 rootfs。
 IMAGE_INSTALL:append = " e2fsprogs-mke2fs"
 
 # 同一场实机验收的第二处:podman 默认能力表缺 NET_RAW,容器内 ping 全灭而

@@ -1,7 +1,7 @@
 [Unit]
 Description=把 Wi-Fi / Hermes / mihomo 配置绑到共享 data 分区
 DefaultDependencies=no
-After=var-lib-containers.mount
+After=var-lib-containers.mount lubancat-data-seal.service
 Before=local-fs.target systemd-tmpfiles-setup.service
 ConditionPathIsMountPoint=/var/lib/containers
 

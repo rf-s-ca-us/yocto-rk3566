@@ -82,9 +82,26 @@ persist_is_mount() {
 	awk -v p="$1" '$2 == p { found = 1 } END { exit (found ? 0 : 1) }' /proc/mounts
 }
 
+# 挂载点是不是「分区名 data 的 ext4」。只读 tmpfs 或别的盘都不算。
+persist_mount_is_data() {
+	mp=$1
+	src=$(awk -v p="$mp" '$2 == p { print $1; exit }' /proc/mounts)
+	fstype=$(awk -v p="$mp" '$2 == p { print $3; exit }' /proc/mounts)
+	[ "$fstype" = ext4 ] || return 1
+	[ -b "$src" ] || return 1
+	base=$(basename "$(readlink -f "$src")")
+	[ -r "/sys/class/block/$base/uevent" ] || return 1
+	name=$(awk -F= '$1 == "PARTNAME" { print $2; exit }' "/sys/class/block/$base/uevent")
+	if [ -z "$name" ] && command -v blkid >/dev/null 2>&1; then
+		name=$(blkid -p -s PART_ENTRY_NAME -o value "$src" 2>/dev/null || true)
+	fi
+	[ "$name" = data ]
+}
+
 # 独立 data 挂载才允许把配置放上去。和根文件系统同一块设备时,
 # bind 只是把根文件系统上的目录又挂了一次,换槽照样丢。
 persist_data_is_separate() {
+	persist_mount_is_data /var/lib/containers || return 1
 	root_dev=$(awk '$2 == "/" { print $1; exit }' /proc/mounts)
 	data_dev=$(awk '$2 == "/var/lib/containers" { print $1; exit }' /proc/mounts)
 	[ -n "$data_dev" ] && [ "$data_dev" != "$root_dev" ]

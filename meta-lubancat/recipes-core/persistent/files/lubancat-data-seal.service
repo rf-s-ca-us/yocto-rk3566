@@ -1,0 +1,15 @@
+[Unit]
+Description=data 分区不可用时禁止把容器数据写进 rootfs
+DefaultDependencies=no
+After=var-lib-containers.mount lubancat-format-data.service
+Before=local-fs.target lubancat-persistent.service podman.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 只读挂载必须留在主机命名空间里。
+PrivateMounts=no
+ExecStart=/usr/libexec/lubancat-persistent/seal-data-store
+
+[Install]
+WantedBy=local-fs.target

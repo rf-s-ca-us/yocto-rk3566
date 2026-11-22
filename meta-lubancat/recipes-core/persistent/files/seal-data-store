@@ -1,0 +1,46 @@
+#!/bin/sh
+# data 分区没有挂到 /var/lib/containers 时,不让后面的服务把容器数据写进
+# 当前槽的根文件系统。已经挂上的错误文件系统改为只读;还是普通目录时盖一层
+# 只读 tmpfs。退出码非 0,单元会显示失败,但不把启动拉进紧急模式。
+set -eu
+
+MNT=${DATA_MNT:-/var/lib/containers}
+
+log() {
+	echo "data-seal: $*"
+}
+
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/persistent-common.sh"
+
+if [ ! -d "$MNT" ]; then
+	mkdir -p "$MNT" || {
+		log "没有 $MNT,无法封闭"
+		exit 1
+	}
+fi
+
+if persist_mount_is_data "$MNT"; then
+	log "$MNT 是分区名 data 的 ext4,保持可写"
+	exit 0
+fi
+
+if awk -v p="$MNT" '$2 == p { found = 1 } END { exit (found ? 0 : 1) }' /proc/mounts; then
+	src=$(awk -v p="$MNT" '$2 == p { print $1; exit }' /proc/mounts)
+	fstype=$(awk -v p="$MNT" '$2 == p { print $3; exit }' /proc/mounts)
+	log "$MNT 已挂载但不是 data 分区的 ext4 (src=$src fstype=$fstype),改为只读"
+	if ! mount -o remount,ro "$MNT" 2>/dev/null; then
+		# 有的挂载不允许 remount。再盖一层只读 tmpfs,写到这个路径上仍会失败。
+		mount -t tmpfs -o ro,nosuid,nodev,noexec,mode=0555 data-closed "$MNT" || {
+			log "把 $MNT 改为只读失败"
+			exit 1
+		}
+	fi
+	exit 1
+fi
+
+log "$MNT 不是 data 分区,挂上只读 tmpfs,避免写进当前 rootfs"
+mount -t tmpfs -o ro,nosuid,nodev,noexec,mode=0555 data-closed "$MNT" || {
+	log "挂只读 tmpfs 失败"
+	exit 1
+}
+exit 1

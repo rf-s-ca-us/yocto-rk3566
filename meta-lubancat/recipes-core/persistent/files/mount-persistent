@@ -7,7 +7,7 @@ set -eu
 . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/persistent-common.sh"
 
 if ! persist_data_is_separate; then
-	persist_log "/var/lib/containers 不是独立挂载,配置留在本槽根文件系统"
+	persist_log "/var/lib/containers 不是分区名 data 的 ext4,配置留在本槽根文件系统"
 	exit 0
 fi
 

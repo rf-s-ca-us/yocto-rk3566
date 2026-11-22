@@ -332,7 +332,9 @@ jobs:
               'lubancat-persistent/format-data-if-empty$' \
               'lubancat-persistent/mount-persistent$' \
               'lubancat-persistent/rauc-slot-hook$' \
+              'lubancat-persistent/seal-data-store$' \
               'lubancat-format-data.service$' \
+              'lubancat-data-seal.service$' \
               'lubancat-persistent.service$'
             do
               tar tzf "$t" | grep -qE "$rel" || { echo "::error::rootfs 缺 $rel"; fail_ota=1; }

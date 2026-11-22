@@ -29,9 +29,11 @@
 #
 # data 尺寸只是镜像内的初始值:parameter.txt 生成时 RK_PARTITION_GROW=1
 # 把最后一个分区标成 grow,RKDevTool 烧录时吃满剩余 eMMC。烧录包不带这块
-# 分区的文件系统字节(烧完前 1MiB 是 0,blkid 无签名)。首启
-# lubancat-format-data.service 只在这种空白盘上 mke2fs,文件系统跟着分区
-# 的实际大小走。WIC 里这份 --fstype ext4 已经格式化过,服务看到签名就不动,
+# 分区的文件系统字节(烧完可写入范围是 0)。首启
+# lubancat-format-data.service 只在分区名 data 且该范围全为零时 mke2fs,
+# 文件系统跟着分区的实际大小走。不能把 blkid -p 的退出码当成已有文件系统:
+# 空分区也会因分区表项退出 0。WIC 里这份 --fstype ext4 已经格式化过,服务看到
+# LABEL=data 的 ext4 就不动,
 # 所以直接写 WIC 时 data 仍是这里的 2G,不会被首启扩成整盘。
 #
 # env 不占分区:u-boot env 钉在 0x1F8000(见 recipes-bsp/u-boot 的补丁),
