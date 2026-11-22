@@ -18,7 +18,9 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main]
+    # 这条修复分支没有 workflow_dispatch 权限,推送本身就是构建入口。
+    # 渠道发布仍只认 main,见下面 bundle 步。
+    branches: [main, cursor/data-blank-provision-e18e]
     # 纯 markdown / LICENSE 连 runner 都不起。docs 指针也列在这里,
     # 但 GitHub 对 submodule 路径过滤不可靠,下面的 gate 才是发布门。
     paths-ignore: ['**.md', 'LICENSE*', 'LICENSES/**', 'docs', 'docs/**']
@@ -567,10 +569,10 @@ jobs:
       # 板上会自动装 latest.json 指的东西,红轮发布等于给板子喂未验产物;
       # 墙钟到点(code=124,job 仍 success)由下面 code 判断跳过。
       # 纯文档 push 到不了这个 job(gate 的 build_image=false)。
-      # push 到 main 仍发布。workflow_dispatch 默认不发;只有显式
-      # publish_ota=true 才改渠道。分支上的手动构建因此只出 artifact。
+      # push 到 main 仍发布。其它分支的 push 和 workflow_dispatch 默认不发;
+      # 只有显式 publish_ota=true 才改渠道。分支构建因此只出 artifact。
       - name: 打 rauc bundle 并推 R2 stable 渠道
-        if: success() && (github.event_name == 'push' || github.event.inputs.publish_ota == 'true')
+        if: success() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.publish_ota == 'true')
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
