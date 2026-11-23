@@ -13,8 +13,14 @@ on:
       target:
         description: bitbake 目标
         default: lubancat-image-minimal
+      publish_ota:
+        description: 成功后是否推 R2 stable 并改写 latest.json。默认否,只留 Actions artifact。
+        type: boolean
+        default: false
   push:
-    branches: [main]
+    # 这条修复分支没有 workflow_dispatch 权限,推送本身就是构建入口。
+    # 渠道发布仍只认 main,见下面 bundle 步。
+    branches: [main, cursor/data-blank-provision-e18e]
     # 纯 markdown / LICENSE 连 runner 都不起。docs 指针也列在这里,
     # 但 GitHub 对 submodule 路径过滤不可靠,下面的 gate 才是发布门。
     paths-ignore: ['**.md', 'LICENSE*', 'LICENSES/**', 'docs', 'docs/**']
@@ -32,6 +38,10 @@ jobs:
       build_image: ${{ steps.decide.outputs.build_image }}
     steps:
       - uses: actions/checkout@v4
+      - name: 空白分区、跨槽配置与选槽脚本自测
+        run: |
+          ci/test-persistent.sh
+          python3 ci/test-ab-boot.py
       - name: 判断要不要编镜像
         id: decide
         env:
@@ -291,6 +301,14 @@ jobs:
               for line_re in 'compatible=lubancat-rk3566' 'bootloader=uboot' 'device=/dev/mmcblk0p3' 'device=/dev/mmcblk0p4' 'bootname=A' 'bootname=B'; do
                 grep -q "$line_re" <<<"$conf_content" || { echo "::error::system.conf 缺 $line_re —— 槽位映射与 wks 布局脱钩"; fail_ota=1; }
               done
+              # RAUC 1.15 读的是 [system]。写成 bundle manifest 的 [update] 时
+              # 服务直接起不来(Key file does not have group 'system')。
+              grep -qx '\[system\]' <<<"$conf_content" \
+                || { echo "::error::system.conf 没有单独一行 [system] —— RAUC 1.15 不认别的组名"; fail_ota=1; }
+              if grep -qx '\[update\]' <<<"$conf_content"; then
+                echo "::error::system.conf 含 [update] 组 —— 那是 bundle manifest 的组名"
+                fail_ota=1
+              fi
             else
               echo "::error::rootfs 里没有 rauc/system.conf"
               fail_ota=1
@@ -310,6 +328,26 @@ jobs:
               fi
             else
               echo "::error::rootfs 里没有 /etc/ota-version —— 版本比对无从做起"
+              fail_ota=1
+            fi
+            for rel in \
+              'lubancat-persistent/format-data-if-empty$' \
+              'lubancat-persistent/mount-persistent$' \
+              'lubancat-persistent/rauc-slot-hook$' \
+              'lubancat-persistent/seal-data-store$' \
+              'lubancat-format-data.service$' \
+              'lubancat-data-seal.service$' \
+              'lubancat-persistent.service$'
+            do
+              tar tzf "$t" | grep -qE "$rel" || { echo "::error::rootfs 缺 $rel"; fail_ota=1; }
+            done
+            f=$(tar tzf "$t" | grep 'etc/fstab$' | head -1) || true
+            if [ -n "$f" ]; then
+              fstab_content=$(tar xzOf "$t" "$f")
+              grep -q 'x-systemd.wants=lubancat-format-data.service' <<<"$fstab_content" \
+                || { echo "::error::fstab 的 data 行没有等格式化服务 —— 空白分区会在 mke2fs 之前被挂"; fail_ota=1; }
+            else
+              echo "::error::rootfs 里没有 /etc/fstab"
               fail_ota=1
             fi
           fi
@@ -496,6 +534,24 @@ jobs:
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
 
+      - name: 记录可烧写镜像校验和
+        if: always()
+        run: |
+          if [ -d out ] && find out -type f -print -quit | grep -q .; then
+            (
+              cd out
+              find . -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -d '\n' sha256sum
+            ) | tee out/SHA256SUMS
+            {
+              echo "### SHA256"
+              echo '```'
+              cat out/SHA256SUMS
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::没有 out/ 文件,跳过校验和"
+          fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -513,8 +569,10 @@ jobs:
       # 板上会自动装 latest.json 指的东西,红轮发布等于给板子喂未验产物;
       # 墙钟到点(code=124,job 仍 success)由下面 code 判断跳过。
       # 纯文档 push 到不了这个 job(gate 的 build_image=false)。
+      # push 到 main 仍发布。其它分支的 push 和 workflow_dispatch 默认不发;
+      # 只有显式 publish_ota=true 才改渠道。分支构建因此只出 artifact。
       - name: 打 rauc bundle 并推 R2 stable 渠道
-        if: success()
+        if: success() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.publish_ota == 'true')
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -569,10 +627,20 @@ jobs:
           WS=$GITHUB_WORKSPACE
           mkdir -p "$WS/build/ota-bundle/in" "$WS/build/ota-bundle/out"
           cp -L "$WS/$rootfs" "$WS/build/ota-bundle/in/rootfs.ext4"
+          # 钩子和它 source 的脚本必须一起进 bundle。RAUC 从 bundle 挂载点
+          # 执行钩子,不会去新槽的根文件系统里找 persistent-common.sh。
+          cp "$WS/meta-lubancat/recipes-core/persistent/files/rauc-slot-hook" \
+            "$WS/build/ota-bundle/in/rauc-slot-hook"
+          cp "$WS/meta-lubancat/recipes-core/persistent/files/persistent-common.sh" \
+            "$WS/build/ota-bundle/in/persistent-common.sh"
+          chmod 0755 "$WS/build/ota-bundle/in/rauc-slot-hook"
           {
             echo "[update]"
             echo "compatible=lubancat-rk3566"
             echo "version=$OTA_VERSION"
+            echo ""
+            echo "[hooks]"
+            echo "filename=rauc-slot-hook"
             echo ""
             echo "[bundle]"
             # verity 是流式安装(install <https URL>)唯一支持的格式:
@@ -581,6 +649,7 @@ jobs:
             echo ""
             echo "[image.rootfs]"
             echo "filename=rootfs.ext4"
+            echo "hooks=pre-install;post-install"
           } > "$WS/build/ota-bundle/in/manifest.raucm"
 
           # 一次性自签证书:rauc bundle 形式上要求 cert+key(main.c
@@ -607,6 +676,8 @@ jobs:
             || { echo "::error::bundle compatible 断言失败"; echo "$info"; exit 1; }
           echo "$info" | grep -Eq "^Version:[[:space:]]*'$OTA_VERSION'$" \
             || { echo "::error::bundle version 断言失败(期望 $OTA_VERSION)"; echo "$info"; exit 1; }
+          echo "$info" | grep -Eq 'Hooks:[[:space:]]+pre-install post-install' \
+            || { echo "::error::bundle 缺少 pre-install/post-install 钩子,覆盖有配置的槽时会丢掉那份配置"; echo "$info"; exit 1; }
 
           cd "$WS"
           # host 门②:latest.json 的 sha256 与 bundle 实际哈希一致(序列化

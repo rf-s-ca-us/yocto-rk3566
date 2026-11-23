@@ -57,6 +57,9 @@ IMAGE_INSTALL:append = " libubootenv libubootenv-bin lubancat-fw-env"
 # 36271625902 的死因,曾以元包试过)。
 IMAGE_INSTALL:append = " rauc lubancat-rauc-conf lubancat-ota"
 
+# 空白 data 分区的首启格式化,以及 Wi-Fi / Hermes / mihomo 跨槽 bind。
+IMAGE_INSTALL:append = " lubancat-persistent"
+
 # Hermes 原生件:venv 组装 + 官方预编译供给件,各自 recipe 见 recipes-devtools /
 # recipes-extended / recipes-connectivity。hermes-agent 会经 RDEPENDS 连带拉进
 # ffmpeg(poky oe-core 现成 recipe,不在 meta-openembedded)。供给件在此显式列出,
@@ -64,14 +67,15 @@ IMAGE_INSTALL:append = " rauc lubancat-rauc-conf lubancat-ota"
 # 运行时交集,同列是它也是本轮交付的预编译件(拍板 1.1)。
 IMAGE_INSTALL:append = " hermes-python hermes-agent lubancat-nodejs ripgrep mihomo vscode-server"
 
-# data 分区随 update.img 开箱即用,缺一不可的两半:
+# data 分区要能挂上,缺一不可的两半:
 #   fstab 行 —— wic 路径会把非 / 挂载点注进 fstab,但 update.img 打包路径直接取
 #   rootfs.ext4,注入不发生(2026-09-13 实机验收实测:烧完 fstab 是 stock 原样,
 #   data 没人挂);在 rootfs 收尾时补,wic 已注入的同款行用 grep 挡住不重复。
 #   nofail:万一将来的布局没有 data 分区,不让启动卡在挂载等待。
-#   mke2fs —— 烧录工具只建分区不建文件系统(data:grow 的分区内容不进 update.img),
-#   首启得有人格式化;实机验收发现板上只有 e2fsck 侧、mke2fs 缺位,当时靠外部
-#   二进制救场。装上它,重烧后一条命令即可自愈,不必再外带工具。
+#   mke2fs —— update.img 的 data:grow 不带文件系统字节,首启格式化要用它。
+#   谁来调用、什么情况下允许写盘,见 lubancat-persistent 的 format-data-if-empty:
+#   分区名必须是 data,内容探测不能只看 blkid -p 的退出码,将写入的范围须全为零。
+#   data 没挂上时 seal-data-store 把该目录改成只读,避免写进当前槽 rootfs。
 IMAGE_INSTALL:append = " e2fsprogs-mke2fs"
 
 # 同一场实机验收的第二处:podman 默认能力表缺 NET_RAW,容器内 ping 全灭而
@@ -79,7 +83,8 @@ IMAGE_INSTALL:append = " e2fsprogs-mke2fs"
 IMAGE_INSTALL:append = " lubancat-containers-conf"
 lubancat_fstab_data() {
     if ! grep -q "^LABEL=data" ${IMAGE_ROOTFS}/etc/fstab; then
-        echo "LABEL=data  /var/lib/containers  ext4  defaults,nofail  0  2" >> ${IMAGE_ROOTFS}/etc/fstab
+        # x-systemd.* 让挂载等空白分区格式化结束。nofail:没有 data 分区时不卡启动。
+        echo "LABEL=data  /var/lib/containers  ext4  defaults,nofail,x-systemd.wants=lubancat-format-data.service,x-systemd.after=lubancat-format-data.service  0  2" >> ${IMAGE_ROOTFS}/etc/fstab
     fi
 }
 ROOTFS_POSTPROCESS_COMMAND:append = " lubancat_fstab_data;"
