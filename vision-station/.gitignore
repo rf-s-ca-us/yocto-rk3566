@@ -1,0 +1,6 @@
+# 模型与运行产物不进仓(仓规:第三方 blob/模型由脚本拉取)
+models/
+snapshots/
+__pycache__/
+*.rknn
+*.onnx

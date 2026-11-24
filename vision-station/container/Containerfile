@@ -1,0 +1,36 @@
+# 视觉小站板上运行镜像(aarch64,在板上或同架构环境构建)。
+#
+# RKNN 运行时(librknnrt.so + rknn-toolkit-lite2)按官方渠道在构建期
+# 拉取并钉版本,不进 git 仓(仓规:第三方 blob 不入库)。
+#   podman build -t vision-station container/
+# 运行(板上):
+#   podman run -d --name vision-station \
+#     --device /dev/dri --device /dev/video0 \
+#     -v /data/vision-models:/models:ro \
+#     -v /var/lib/containers/vision-snapshots:/data/snapshots \
+#     -v /etc/vision-station/config.json:/etc/vision-station/config.json:ro \
+#     -p 192.168.0.114:8090:8090 vision-station
+# 注意 --device /dev/dri 是 NPU render 节点;阶段 0 自检确认节点存在
+# 后再定最终设备参数。
+FROM docker.io/library/python:3.11-slim-bookworm
+
+ARG RKNN_TOOLKIT2_REPO=https://raw.githubusercontent.com/airockchip/rknn-toolkit2/master
+ARG RKNN_LITE_WHL=rknn_toolkit_lite2-2.5.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl libusb-1.0-0 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# RKNN 运行时库 + Python lite 包(官方 GitHub 仓,构建期拉取)
+RUN curl -fL -o /usr/lib/librknnrt.so \
+        "$RKNN_TOOLKIT2_REPO/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so" \
+    && curl -fL -o /tmp/rknn_lite.whl \
+        "$RKNN_TOOLKIT2_REPO/rknn-toolkit-lite2/packages/$RKNN_LITE_WHL" \
+    && pip install --no-cache-dir /tmp/rknn_lite.whl \
+        "numpy>=1.26,<2" "opencv-python-headless>=4.8,<5" \
+    && rm /tmp/rknn_lite.whl
+
+COPY app/ /opt/vision-station/app/
+WORKDIR /opt/vision-station
+ENTRYPOINT ["python3", "app/vision_station.py", \
+            "--config", "/etc/vision-station/config.json"]

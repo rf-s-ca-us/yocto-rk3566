@@ -1,0 +1,19 @@
+{
+    "bind": "0.0.0.0",
+    "camera_device": 0,
+    "conf_thresh": 0.25,
+    "cooldown_s": 60,
+    "detector": "rknn",
+    "max_fps": 10,
+    "max_snapshots": 200,
+    "model": "/models/yolov8n_rk3566.rknn",
+    "notify_cmd": "",
+    "port": 8090,
+    "snapshot_dir": "/data/snapshots",
+    "source": "camera",
+    "target_labels": [
+        "person",
+        "cat",
+        "dog"
+    ]
+}
