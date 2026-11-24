@@ -40,6 +40,14 @@ ONNX 来源是 Rockchip `rknn_model_zoo` 官方 `download_model.sh` 指向
 host 上用 RKNN-Toolkit2 做,默认 FP 不量化——INT8 量化要校准集,
 等实机测过基线帧率再评估。
 
+2026-11-24 已实转一份:yolov8n_rk3566.rknn,8,068,105 字节,
+SHA-256 `389a1917778e6fd2591d68655a7b7b5950b346dcfd7feb2f1b92394cc670ee71`
+(Toolkit2 2.5.0,产物不进仓,板上部署时随模型目录分发或重跑本流水线)。
+host 侧模拟器验证不可用:Toolkit2 2.5.0 在 x86 对已导出模型
+init_runtime 返回 -1,推理正确性只能上板验(阶段 1 冒烟项)。
+环境坑:Toolkit2 2.5.0 依赖 pkg_resources,venv 里要钉
+`setuptools<81`(81 起该模块被移除,报 ModuleNotFoundError)。
+
 ## 板上运行(阶段 1,待阶段 0 自检后)
 
 先决条件(设计稿阶段 0):板上确认 NPU 驱动与设备节点存在
@@ -49,7 +57,7 @@ host 上用 RKNN-Toolkit2 做,默认 FP 不量化——INT8 量化要校准集,
 ## 当前状态
 
 - 阶段 0(上板验 NPU 前提):待用户执行自检。
-- 阶段 1(容器原型):代码与 host 验证已就绪,待阶段 0 结论上板。
+- 阶段 1(容器原型):代码与 host 验证已就绪,模型已转好,待阶段 0 结论上板。
 - 阶段 2(layer 固化):未开始;若自检发现驱动缺席,先加 `npu.cfg`
   内核片段 + CI 断言,再谈固化。
 - 阶段 3(事件推送接 Hermes):通知钩子接口已留(`notify_cmd` +
