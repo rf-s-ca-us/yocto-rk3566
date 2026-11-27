@@ -42,6 +42,8 @@ jobs:
         run: |
           ci/test-persistent.sh
           python3 ci/test-ab-boot.py
+      - name: RAUC 签名密钥与镜像 keyring 自测
+        run: ci/test-rauc-signing-key.sh
       - name: 判断要不要编镜像
         id: decide
         env:
@@ -291,7 +293,7 @@ jobs:
               echo
               echo "### OTA 关键文件"
               echo '```'
-              tar tzf "$t" | sort | grep -E '(rauc/system.conf$|ota-version$|lubancat-ota/ota-(update|selfcheck)$|lubancat-ota(-selfcheck)?\.(service|timer)$)' || echo "(OTA 文件一个都没有)"
+              tar tzf "$t" | sort | grep -E '(rauc/system.conf$|rauc/keyring.pem$|ota-version$|lubancat-ota/ota-(update|selfcheck)$|lubancat-ota(-selfcheck)?\.(service|timer)$)' || echo "(OTA 文件一个都没有)"
               tar tzvf "$t" | grep 'rauc-mark-good.service -> /dev/null' || echo "(rauc-mark-good 未被 mask)"
               echo '```'
             } | tee -a $GITHUB_STEP_SUMMARY
@@ -313,6 +315,11 @@ jobs:
               echo "::error::rootfs 里没有 rauc/system.conf"
               fail_ota=1
             fi
+            # keyring 文件、0644、字节与 system.conf 的 [keyring] 路径。
+            # RAUC 1.15 缺这一段会在 Checking bundle 20% 报
+            # "No keyring file or directory provided"。
+            ci/check-image-rauc-keyring.sh "$t" meta-lubancat/recipes-core/ota/files/keyring.pem \
+              || fail_ota=1
             # /etc/ota-version 内容断言:文件在 ≠ 注入链没断。注入链 local.conf
             # 的 OTA_VERSION → recipe do_install → /etc/ota-version,断在中间
             # 一环时板上客户端拿空/旧版本号比对,永远判「远端更新」→ 无限重装
@@ -578,11 +585,19 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
           SSTATE_BASE_URL: ${{ vars.SSTATE_BASE_URL }}
+          # 只在这个发布步注入。PR / 不发布的构建进不了本步,secret 缺失不会让它们变红。
+          RAUC_SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
         run: |
           code="${{ steps.bitbake.outputs.code }}"
           if [ "$code" != "0" ]; then
             echo "::warning::bitbake exit $code,本轮没有完整 rootfs,跳过 OTA bundle"
             exit 0
+          fi
+          # main 上发布必须有签名密钥。放在 R2 凭据判断之前:secret 没配时
+          # 不能被「凭据不全就跳过」吞成绿。
+          if [ "${GITHUB_REF:-}" = "refs/heads/main" ] && [ -z "${RAUC_SIGNING_KEY:-}" ]; then
+            echo "::error::发布 OTA bundle 需要 GitHub Secret RAUC_SIGNING_KEY(原文 PEM 私钥,或无 -----BEGIN 的 base64 PEM)。main 上该 secret 为空,拒绝签名。"
+            exit 1
           fi
           # 凭据判断放 shell 里不放 if:(步骤级 env 在自己的 if 表达式里
           # 取不到,同「推 sstate」步);fork/PR 拿不到 secret,不该因此变红
@@ -600,6 +615,16 @@ jobs:
           fi
           ep="${{ secrets.R2_ENDPOINT }}"
           bucket="${{ vars.R2_BUCKET }}"
+
+          # 签名密钥在跑 rauc-native 之前就核对。配错 secret 时不必再等一轮
+          # native 构建。私钥只落在 /tmp 的 600 文件里,核对完立刻从环境里去掉,
+          # 避免后面的 bitbake 把它卷进任务环境。
+          cert="${GITHUB_WORKSPACE}/meta-lubancat/recipes-core/ota/files/keyring.pem"
+          sign_key=$(mktemp)
+          chmod 600 "$sign_key"
+          trap 'rm -f "$sign_key"' EXIT
+          "${GITHUB_WORKSPACE}/ci/prepare-rauc-signing-key.sh" "$cert" "$sign_key"
+          unset RAUC_SIGNING_KEY
 
           # rauc 打 bundle 要调外部 mksquashfs(bundle.c create_bundle),
           # squashfs-tools-native 已由 rauc-native 的 bbappend 提为 DEPENDS
@@ -652,26 +677,26 @@ jobs:
             echo "hooks=pre-install;post-install"
           } > "$WS/build/ota-bundle/in/manifest.raucm"
 
-          # 一次性自签证书:rauc bundle 形式上要求 cert+key(main.c
-          # bundle_start "Cert and key files must be provided"),板上无
-          # keyring 根本不验(bundle.c,system.conf 无 [keyring] 段)。
-          # 当场生成当场用,不进 artifact 不进缓存 —— 信任根仍是 R2 写
-          # 权限(拍板 3),仓里没有新增秘密。
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -subj "/CN=ota-ephemeral-$GITHUB_RUN_ID" \
-            -keyout "$WS/build/ota-bundle/ephemeral.key" \
-            -out "$WS/build/ota-bundle/ephemeral.crt" 2>/dev/null
-
+          # 固定密钥对:--cert 是仓内公钥,--key 是上面核对过的临时私钥。
+          # 签完立刻删私钥。板上用同一份证书验签(system.conf [keyring])。
           rauc \
-            --cert "$WS/build/ota-bundle/ephemeral.crt" \
-            --key "$WS/build/ota-bundle/ephemeral.key" \
+            --cert "$cert" \
+            --key "$sign_key" \
             bundle "$WS/build/ota-bundle/in" "$WS/build/ota-bundle/out/update.raucb"
+          rm -f "$sign_key"
 
-          # host 门①:bundle 内容断言。info 默认 readable 输出,值带单引号
-          # (main.c info_formatter_readable 的 Compatible:/Version: 格式),
-          # grep 按真实格式锚定,不猜小写无引号形态。
-          info=$(rauc info --no-verify \
-            "$WS/build/ota-bundle/out/update.raucb")
+          # host 门①:用仓内证书验签,再断言 bundle 内容。info 默认 readable
+          # 输出,值带单引号(main.c info_formatter_readable 的
+          # Compatible:/Version: 格式),grep 按真实格式锚定。
+          info_err=$(mktemp)
+          if ! info=$(rauc info --keyring "$cert" \
+              "$WS/build/ota-bundle/out/update.raucb" 2>"$info_err"); then
+            echo "::error::bundle 无法用仓内 keyring.pem 验签"
+            cat "$info_err"
+            rm -f "$info_err"
+            exit 1
+          fi
+          rm -f "$info_err"
           echo "$info" | grep -Eq "^Compatible:[[:space:]]*'lubancat-rk3566'$" \
             || { echo "::error::bundle compatible 断言失败"; echo "$info"; exit 1; }
           echo "$info" | grep -Eq "^Version:[[:space:]]*'$OTA_VERSION'$" \
@@ -690,9 +715,38 @@ jobs:
           [ "$(jq -r .sha256 build/ota-bundle/out/latest.json)" = "$sha" ] \
             || { echo "::error::latest.json 的 sha256 与 bundle 不一致"; exit 1; }
 
-          aws s3 cp build/ota-bundle/out/update.raucb \
-            "s3://$bucket/ota/stable/$OTA_VERSION/update.raucb" \
-            --endpoint-url "$ep" --only-show-errors
+          # 628MB 的 update.raucb 走默认 8MB 分片时,CompleteMultipartUpload
+          # 曾返回 InvalidPart(run 92 attempt 1)。加大分片、压低并发;
+          # 分片内的瞬时错误由 CLI 再试,整包失败后再试 2 次(共 3 次)。
+          s3cfg=$(mktemp)
+          {
+            echo '[default]'
+            echo 'retry_mode = standard'
+            echo 'max_attempts = 3'
+            echo 's3 ='
+            echo '    multipart_chunksize = 64MB'
+            echo '    multipart_threshold = 64MB'
+            echo '    max_concurrent_requests = 4'
+          } > "$s3cfg"
+          upload_ok=0
+          attempt=1
+          while [ "$attempt" -le 3 ]; do
+            if AWS_CONFIG_FILE="$s3cfg" AWS_RETRY_MODE=standard AWS_MAX_ATTEMPTS=3 \
+                aws --cli-connect-timeout 60 --cli-read-timeout 300 s3 cp \
+                  build/ota-bundle/out/update.raucb \
+                  "s3://$bucket/ota/stable/$OTA_VERSION/update.raucb" \
+                  --endpoint-url "$ep" --only-show-errors; then
+              upload_ok=1
+              break
+            fi
+            echo "::warning::update.raucb 上传失败(第 ${attempt}/3 次)"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+            attempt=$((attempt + 1))
+          done
+          rm -f "$s3cfg"
+          [ "$upload_ok" -eq 1 ] || { echo "::error::update.raucb 在 3 次尝试后仍未传到 R2"; exit 1; }
           # 指针最后写:S3 单对象 PUT 原子,读侧要么旧指针要么新指针
           aws s3 cp build/ota-bundle/out/latest.json \
             "s3://$bucket/ota/stable/latest.json" \

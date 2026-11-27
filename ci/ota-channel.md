@@ -55,9 +55,18 @@ bundle 先传 → latest.json 后传(S3 单对象 PUT 原子)。读侧要么看�
 
 - 格式钉 **verity**:`rauc install <https URL>` 是流式路径,RAUC v1.15.2 明确拒绝
   plain 的流式安装("Bundle format 'plain' not supported in streaming mode",
-  src/bundle.c check_bundle)⇒ 无得选。打包证书是当轮一次性自签(main.c
-  bundle_start 形式要求 cert+key),板上无 keyring 不验签 —— 信任根是 R2
-  写权限(拍板 3)。
+  src/bundle.c check_bundle)⇒ 无得选。
+- 签名是固定密钥对,不再每轮自签。公钥证书
+  `meta-lubancat/recipes-core/ota/files/keyring.pem`(CN=`yocto-rk3566-ota`,
+  SHA-256 `3C:4C:D5:4B:43:61:50:C9:36:22:86:CE:1A:51:B4:3F:14:79:B9:10:28:21:6E:73:DA:63:5E:EA:17:16:EE:3A`)
+  以 0644 装进镜像 `/etc/rauc/keyring.pem`,`[keyring] path=` 指向它。私钥只在
+  GitHub Secret `RAUC_SIGNING_KEY`:原文 PEM,或没有 `-----BEGIN` 的 base64 PEM。
+  CI 把它写进 mode 600 的临时文件,用 openssl 核对公钥与这份证书一致后才
+  `rauc bundle`,退出时删掉,不进日志、不进仓。`main` 上要发布 bundle 而 secret
+  为空,这一步直接失败。
+- RAUC 1.15.2 把缺 keyring 当成硬错误(`No keyring file or directory provided`,
+  Checking bundle / 20%),没有 `--disable-verification`。板上按这份证书验签;
+  verity 仍校验 bundle 完整性。
 - verity 安装需要内核 DM_VERITY 链路(RAUC src/dm.c 走 /dev/mapper/control 直调;
   hash 默认 sha256,Kconfig 不随 DM_VERITY 自动选)。vendor defconfig @ ea9e2a93
   缺 MD/BLK_DEV_DM/DM_VERITY/CRYPTO_SHA256,已由
