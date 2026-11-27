@@ -60,8 +60,154 @@ else
 	ok "mke2fs 行没有 -F"
 fi
 
+# 去掉注释再扫。poky 的 BusyBox 1.36.1 没开 DESKTOP / FEATURE_DD_STATUS /
+# FEATURE_DD_IBS_OBS,awk 的 printf %u 在 ≥2^31 时会打错。
+script_body() {
+	sed 's/#.*//' "$1"
+}
+
+echo "== device scripts stay inside BusyBox 1.36.1"
+for f in "$FMT" "$HOOK" "$MOUNT" "$COMMON" "$SEAL"; do
+	name=$(basename "$f")
+	body=$(script_body "$f")
+	if printf '%s\n' "$body" | grep -E -q '(status|conv|iflag|oflag|ibs|obs)='; then
+		bad "$name 使用了 BusyBox dd 没有的操作数" \
+			"$(printf '%s\n' "$body" | grep -E -n '(status|conv|iflag|oflag|ibs|obs)=' || true)"
+	else
+		ok "$name 没有 BusyBox dd 不认识的操作数"
+	fi
+	if printf '%s\n' "$body" | grep -E '(^|[^[:alnum:]_])od[[:space:]]' | grep -E -q '(^|[[:space:]])-[A-Za-z]*[AtjNw]'; then
+		bad "$name 的 od 用了非 DESKTOP BusyBox 没有的选项" \
+			"$(printf '%s\n' "$body" | grep -E -n '(^|[^[:alnum:]_])od[[:space:]]' || true)"
+	else
+		ok "$name 的 od 选项 BusyBox 能用"
+	fi
+done
+if printf '%s\n' "$(script_body "$FMT")" | grep -q '%u'; then
+	bad "format-data-if-empty 使用了 BusyBox awk 会截断的 printf %u"
+else
+	ok "CRC 不用 printf %u"
+fi
+
 workdir=$(mktemp -d)
+# sudo 要能执行替身。mktemp 的目录默认是 0700,root 进不去。
+chmod 755 "$workdir"
+BB=$workdir/busybox-shims
+mkdir -p "$BB"
+chmod 755 "$BB"
 trap 'rm -rf "$workdir"; rm -rf /tmp/ov-* 2>/dev/null || true' EXIT
+
+# 替身模仿 poky defconfig 的 BusyBox 1.36.1,而不是 Ubuntu 那份(Ubuntu 打开了
+# status= 和 DESKTOP,发现不了这次的故障)。
+cat > "$BB/dd" << 'EOF'
+#!/bin/sh
+for a in "$@"; do
+	case $a in
+		status=*|conv=*|iflag=*|oflag=*|ibs=*|obs=*)
+			echo "dd: unsupported operand $a" >&2
+			exit 1
+			;;
+	esac
+done
+exec /usr/bin/dd "$@"
+EOF
+cat > "$BB/od" << 'EOF'
+#!/bin/sh
+# 只接受 -b -v,并按非 DESKTOP BusyBox od -b -v 的形状打印:
+# 7 位八进制地址、3 位八进制字节。GNU 的 -A/-t/-j/-N 直接拒绝。
+set -eu
+mode=
+file=
+for a in "$@"; do
+	case $a in
+		-*)
+			rest=${a#-}
+			while [ -n "$rest" ]; do
+				c=$(printf '%.1s' "$rest")
+				rest=${rest#?}
+				case $c in
+					b|v|a|B|c|D|d|e|F|f|H|h|I|i|L|l|O|o|X|x)
+						mode=$mode$c
+						;;
+					*)
+						echo "od: invalid option -- '$c'" >&2
+						exit 1
+						;;
+				esac
+			done
+			;;
+		*)
+			file=$a
+			;;
+	esac
+done
+case $mode in
+	bv|vb) ;;
+	*)
+		echo "od: unsupported option set -$mode" >&2
+		exit 1
+		;;
+esac
+[ -n "${file:-}" ] || {
+	echo "od: missing file" >&2
+	exit 1
+}
+/usr/bin/od -An -v -tu1 "$file" | /usr/bin/awk '
+	{
+		for (i = 1; i <= NF; i++) bytes[++n] = $i + 0
+	}
+	END {
+		if (n == 0) {
+			printf "0000000\n"
+			exit
+		}
+		for (i = 1; i <= n; i++) {
+			if ((i - 1) % 16 == 0)
+				printf "%s%07o  ", (i == 1 ? "" : "\n"), i - 1
+			printf "%03o", bytes[i]
+			if (i % 16 != 0 && i != n)
+				printf " "
+		}
+		printf "\n%07o\n", n
+	}
+'
+EOF
+cat > "$BB/awk" << 'EOF'
+#!/bin/sh
+# BusyBox awk 的 printf %u 在数值 ≥ 2^31 时固定打成 2147483648。
+for a in "$@"; do
+	case $a in
+		*'%u'*)
+			echo "awk: printf %u truncates values >= 2^31" >&2
+			exit 1
+			;;
+	esac
+done
+exec /usr/bin/awk "$@"
+EOF
+chmod 755 "$BB/dd" "$BB/od" "$BB/awk"
+
+echo "== BusyBox shims reject the operands that broke image 90"
+if "$BB/dd" if=/dev/zero of=/dev/null bs=1 count=1 status=none >/dev/null 2>&1; then
+	bad "测试用 dd 没有拒绝 status=none"
+else
+	ok "测试用 dd 拒绝 status=none"
+fi
+if "$BB/dd" if=/dev/zero of=/dev/null bs=1 count=1 conv=notrunc >/dev/null 2>&1; then
+	bad "测试用 dd 没有拒绝 conv="
+else
+	ok "测试用 dd 拒绝 conv="
+fi
+if "$BB/od" -An -tx1 "$BB/dd" >/dev/null 2>&1; then
+	bad "测试用 od 没有拒绝 -A/-t"
+else
+	ok "测试用 od 拒绝 -A/-t"
+fi
+if "$BB/awk" 'BEGIN { printf "%u\n", 1 }' >/dev/null 2>&1; then
+	bad "测试用 awk 没有拒绝 %u"
+else
+	ok "测试用 awk 拒绝 %u"
+fi
 # 钩子的抢救目录默认在 /var/lib。测试里改到临时目录,避免碰到宿主机。
 export PERSIST_SALVAGE=$workdir/salvage
 
@@ -103,7 +249,15 @@ run_format() {
 	name=$1
 	shift
 	set +e
-	out=$(env "$@" "$FMT" 2>&1)
+	# 调用方可以自己设 PATH(放进假的 blkid/mke2fs)。BusyBox 替身始终排在最前,
+	# 这样 status= 这种操作数会在进到 GNU dd 之前被拒绝。
+	rest=/usr/sbin:/usr/bin:/bin
+	for a in "$@"; do
+		case $a in
+			PATH=*) rest=${a#PATH=} ;;
+		esac
+	done
+	out=$(env "$@" PATH="$BB:$rest" "$FMT" 2>&1)
 	RUN_RC=$?
 	set -e
 	printf '%s\n' "$out" > "$workdir/last.out"
@@ -180,8 +334,18 @@ refuse "前 1MiB 有非零字节" "$workdir/bin-nonzero" DATA_FORMAT_ALLOW_FILE=
 
 magic=$workdir/magic.img
 zero_file "$magic"
-printf '\x53\xef' | dd of="$magic" bs=1 seek=1080 conv=notrunc status=none
+# dash 的 printf 不认识 \x。八进制 \123\357 才是 0x53 0xef。
+printf '\123\357' | dd of="$magic" bs=1 seek=1080 conv=notrunc status=none
+# 真 blkid 会把偏移 1080 的魔数认成 ext2,脚本在魔数检查之前就返回。
+# 这里让 blkid 什么都没看见,专门走魔数这条防线。
+mkdir -p "$workdir/bin-magic"
+make_fake_blkid "$workdir/bin-magic" 2
 refuse "ext 魔数" "$workdir/bin-magic" DATA_FORMAT_ALLOW_FILE=1 DATA_DEV="$magic"
+if grep -q '有 ext 超级块魔数' "$workdir/last.out"; then
+	ok "ext 魔数由魔数检查拒绝"
+else
+	bad "ext 魔数没有命中魔数检查" "$(cat "$workdir/last.out")"
+fi
 
 short=$workdir/short.img
 dd if=/dev/zero of="$short" bs=1024 count=100 status=none
@@ -246,7 +410,7 @@ make_fake_blkid "$bin" 2
 img=$workdir/fail.img
 zero_file "$img"
 set +e
-env PATH="$bin:/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_DEV="$img" "$FMT" >"$workdir/fail.out" 2>&1
+env PATH="$BB:$bin:/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_DEV="$img" "$FMT" >"$workdir/fail.out" 2>&1
 rc=$?
 set -e
 if [ "$rc" -ne 0 ]; then
@@ -640,7 +804,7 @@ PY
 				bad "空分区 blkid 语义与实测不符" "plain=$plain -D=$suppressed"
 			fi
 			set +e
-			out=$(sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" 2>&1)
+			out=$(sudo -n env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" 2>&1)
 			rc=$?
 			set -e
 			printf '%s\n' "$out" > "$workdir/last.out"
@@ -655,7 +819,7 @@ PY
 				echo keep-me | sudo -n tee "$gpt/mnt/marker" >/dev/null
 				sudo -n umount "$gpt/mnt"
 				set +e
-				sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+				sudo -n env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
 				rc=$?
 				set -e
 				sudo -n mount "$part" "$gpt/mnt"
@@ -667,7 +831,7 @@ PY
 				sudo -n umount "$gpt/mnt"
 				sudo -n mount "$part" "$gpt/mnt"
 				set +e
-				sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+				sudo -n env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
 				rc=$?
 				set -e
 				if [ "$rc" -ne 0 ] && [ "$(cat "$gpt/mnt/marker")" = keep-me ]; then
@@ -676,7 +840,7 @@ PY
 					bad "已挂载时拒绝格式化" "rc=$rc"
 				fi
 				set +e
-				out=$(sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_MNT="$gpt/mnt" "$SEAL" 2>&1)
+				out=$(sudo -n env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_MNT="$gpt/mnt" "$SEAL" 2>&1)
 				rc=$?
 				set -e
 				echo still | sudo -n tee "$gpt/mnt/more" >/dev/null
@@ -694,7 +858,7 @@ PY
 			sudo -n dd if=/dev/zero of="$part" bs=512 count="$secs" status=none
 			printf 'LUKS\272\276\000\001' | sudo -n dd of="$part" bs=1 conv=notrunc status=none
 			set +e
-			sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+			sudo -n env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
 			rc=$?
 			set -e
 			kind=$(sudo -n blkid -p -D -s TYPE -o value "$part" 2>/dev/null || true)
@@ -707,7 +871,7 @@ PY
 			sudo -n dd if=/dev/zero of="$part" bs=512 count="$secs" status=none
 			printf '\001' | sudo -n dd of="$part" bs=1 seek=2097152 conv=notrunc status=none
 			set +e
-			sudo -n env PATH="/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
+			sudo -n env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_DEV="$part" "$FMT" >/dev/null 2>&1
 			rc=$?
 			set -e
 			kind=$(sudo -n blkid -p -D -s TYPE -o value "$part" 2>/dev/null || true)
@@ -723,7 +887,7 @@ PY
 	before=$(wc -c < "$tailfile" | tr -d ' ')
 	cp "$tailfile" "$gpt/over-copy.bin"
 	set +e
-	out=$(env PATH="/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gpt/over-copy.bin" "$FMT" 2>&1)
+	out=$(env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gpt/over-copy.bin" "$FMT" 2>&1)
 	rc=$?
 	set -e
 	printf '%s\n' "$out" > "$workdir/last.out"
@@ -743,7 +907,7 @@ PY
 		bad "只含备份 GPT 尾部的空白分区被格式化且尾部保留" "rc=$rc label=$label tail=$same" "$out"
 	fi
 	set +e
-	out=$(env PATH="/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gpt/over-copy.bin" "$FMT" 2>&1)
+	out=$(env PATH="$BB:/usr/sbin:/usr/bin:/bin" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gpt/over-copy.bin" "$FMT" 2>&1)
 	rc=$?
 	set -e
 	if [ "$rc" -eq 0 ]; then
