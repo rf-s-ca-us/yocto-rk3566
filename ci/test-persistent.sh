@@ -60,6 +60,27 @@ else
 	ok "mke2fs 行没有 -F"
 fi
 
+echo "== poky BusyBox 1.36.1 不接受的参数"
+# 只扫代码行。注释里可以写 status=none,提醒后来的人别加回去。
+scan_busybox_flags() {
+	file=$1
+	label=$2
+	hits=$(awk '
+		/^[[:space:]]*#/ { next }
+		{ print NR ":" $0 }
+	' "$file" | grep -E 'status=|conv=|ibs=|obs=|iflag=|oflag=|(^|[^[:alnum:]_])od([^[:alnum:]_]|$)|printf "%[0-9.]*[udxX]' || true)
+	if [ -n "$hits" ]; then
+		bad "$label" "$hits"
+	else
+		ok "$label"
+	fi
+}
+scan_busybox_flags "$FMT" "format-data-if-empty 没有 GNU 专用的 dd/od/awk 写法"
+scan_busybox_flags "$COMMON" "persistent-common.sh 没有 GNU 专用的 dd/od/awk 写法"
+scan_busybox_flags "$SEAL" "seal-data-store 没有 GNU 专用的 dd/od/awk 写法"
+scan_busybox_flags "$MOUNT" "mount-persistent 没有 GNU 专用的 dd/od/awk 写法"
+scan_busybox_flags "$HOOK" "rauc-slot-hook 没有 GNU 专用的 dd/od/awk 写法"
+
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"; rm -rf /tmp/ov-* 2>/dev/null || true' EXIT
 # 钩子的抢救目录默认在 /var/lib。测试里改到临时目录,避免碰到宿主机。
@@ -817,6 +838,299 @@ if unshare --user --map-root-user --mount true >/dev/null 2>&1; then
 	fi
 else
 	echo "  skip 封闭测试:unshare 不可用"
+fi
+
+echo "== format-data 在 poky BusyBox 1.36.1 下"
+# Ubuntu 的 busybox 包打开了 CONFIG_DESKTOP 和 CONFIG_FEATURE_DD_STATUS,
+# 用它测不出板上的失败。这里按 scarthgap defconfig 另编一份:关掉这两项,
+# 也关掉 CONFIG_FEATURE_DD_IBS_OBS,打开 hexdump 和 awk libm。
+pbb_usable() {
+	bin=$1
+	[ -x "$bin" ] || return 1
+	if printf x | "$bin" dd status=none >/dev/null 2>&1; then
+		return 1
+	fi
+	if "$bin" od -An "$bin" >/dev/null 2>&1; then
+		return 1
+	fi
+	got=$("$bin" awk 'BEGIN { printf "%.0f", 4294967295 }') || return 1
+	[ "$got" = 4294967295 ]
+}
+
+build_poky_busybox() {
+	cache=/tmp/lubancat-busybox-1.36.1-poky
+	bin=$cache/busybox
+	if pbb_usable "$bin"; then
+		printf '%s\n' "$bin"
+		return 0
+	fi
+	if ! command -v gcc >/dev/null 2>&1 || ! command -v make >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+		echo "缺少 gcc、make 或 curl,无法编 BusyBox" >&2
+		return 1
+	fi
+	mkdir -p "$cache"
+	tar=$cache/busybox-1.36.1.tar.bz2
+	if [ ! -s "$tar" ]; then
+		if ! curl -fsSL --retry 3 -o "$tar.part" https://busybox.net/downloads/busybox-1.36.1.tar.bz2; then
+			if ! curl -fsSL --retry 3 -o "$tar.part" http://archive.ubuntu.com/ubuntu/pool/main/b/busybox/busybox_1.36.1.orig.tar.bz2; then
+				echo "下载 BusyBox 1.36.1 失败" >&2
+				return 1
+			fi
+		fi
+		mv "$tar.part" "$tar"
+	fi
+	src=$cache/busybox-1.36.1
+	if [ ! -f "$src/Makefile" ]; then
+		rm -rf "$src"
+		tar -xjf "$tar" -C "$cache"
+	fi
+	if ! (
+		set -eu
+		cd "$src"
+		make allnoconfig </dev/null >"$cache/build.log" 2>&1
+		enable() {
+			key=$1
+			if grep -q "^${key}=y$" .config; then
+				return 0
+			fi
+			if grep -q "^# ${key} is not set$" .config; then
+				sed -i "s/^# ${key} is not set$/${key}=y/" .config
+			else
+				echo "${key}=y" >> .config
+			fi
+		}
+		disable() {
+			key=$1
+			if grep -q "^# ${key} is not set$" .config; then
+				return 0
+			fi
+			if grep -q "^${key}=y$" .config; then
+				sed -i "s/^${key}=y$/# ${key} is not set/" .config
+			else
+				echo "# ${key} is not set" >> .config
+			fi
+		}
+		for key in CONFIG_STATIC CONFIG_LFS CONFIG_BUSYBOX \
+			CONFIG_DD CONFIG_FEATURE_DD_SIGNAL_HANDLING \
+			CONFIG_OD CONFIG_HEXDUMP \
+			CONFIG_TR CONFIG_FEATURE_TR_CLASSES \
+			CONFIG_WC CONFIG_AWK CONFIG_FEATURE_AWK_LIBM CONFIG_FEATURE_AWK_GNU_EXTENSIONS \
+			CONFIG_GREP CONFIG_MKTEMP; do
+			enable "$key"
+		done
+		for key in CONFIG_DESKTOP CONFIG_FEATURE_DD_THIRD_STATUS_LINE \
+			CONFIG_FEATURE_DD_IBS_OBS CONFIG_FEATURE_DD_STATUS \
+			CONFIG_FEATURE_WC_LARGE; do
+			disable "$key"
+		done
+		make oldconfig </dev/null >>"$cache/build.log" 2>&1
+		if grep -q '^CONFIG_DESKTOP=y$' .config \
+			|| grep -q '^CONFIG_FEATURE_DD_STATUS=y$' .config \
+			|| grep -q '^CONFIG_FEATURE_DD_IBS_OBS=y$' .config; then
+			echo "BusyBox 配置被打开了 DESKTOP 或 dd status/ibs" >&2
+			return 1
+		fi
+		sleep 1
+		jobs=$(nproc 2>/dev/null || echo 1)
+		make -j"$jobs" >>"$cache/build.log" 2>&1
+	); then
+		echo "编译 BusyBox 失败,日志 $cache/build.log" >&2
+		tail -n 40 "$cache/build.log" >&2 || true
+		return 1
+	fi
+	cp "$src/busybox" "$bin"
+	chmod 0755 "$bin"
+	if ! pbb_usable "$bin"; then
+		echo "编出来的 BusyBox 仍接受 status= 或 od -A,或 awk 整数被钳位" >&2
+		return 1
+	fi
+	printf '%s\n' "$bin"
+}
+
+if ! bb=$(build_poky_busybox); then
+	bad "编出 poky 配置的 BusyBox 1.36.1"
+else
+	ok "编出 poky 配置的 BusyBox 1.36.1"
+	bbin=$workdir/poky-bb
+	mkdir -p "$bbin"
+	for applet in dd od awk tr grep wc hexdump mktemp; do
+		ln -sf "$bb" "$bbin/$applet"
+	done
+	bb_path="$bbin:/usr/sbin:/usr/bin:/sbin:/bin"
+	if printf x | env PATH="$bb_path" dd status=none >/dev/null 2>&1; then
+		bad "测试 PATH 上的 dd 拒绝 status="
+	else
+		ok "测试 PATH 上的 dd 拒绝 status="
+	fi
+	if env PATH="$bb_path" od -An -tu1 "$bb" >/dev/null 2>&1; then
+		bad "测试 PATH 上的 od 拒绝 -A/-t"
+	else
+		ok "测试 PATH 上的 od 拒绝 -A/-t"
+	fi
+
+	bb_blank=$workdir/bb-blank
+	mkdir -p "$bb_blank"
+	make_fake_mke2fs "$bb_blank" 0
+	make_fake_blkid "$bb_blank" 2
+	blank=$workdir/bb-blank.img
+	zero_file "$blank"
+	run_format "busybox 空白文件" \
+		PATH="$bb_blank:$bb_path" \
+		DATA_FORMAT_ALLOW_FILE=1 \
+		DATA_DEV="$blank"
+	if [ "$RUN_RC" -eq 0 ] && [ -s "$bb_blank/mke2fs.log" ]; then
+		ok "BusyBox 下空白文件会格式化"
+	else
+		bad "BusyBox 下空白文件会格式化" "$(cat "$workdir/last.out")"
+	fi
+
+	bb_magic=$workdir/bb-magic
+	mkdir -p "$bb_magic"
+	make_fake_mke2fs "$bb_magic" 0
+	make_fake_blkid "$bb_magic" 2
+	magicf=$workdir/bb-magic.img
+	zero_file "$magicf"
+	printf '\x53\xef' | dd of="$magicf" bs=1 seek=1080 conv=notrunc status=none
+	run_format "busybox ext 魔数" \
+		PATH="$bb_magic:$bb_path" \
+		DATA_FORMAT_ALLOW_FILE=1 \
+		DATA_DEV="$magicf"
+	if [ "$RUN_RC" -ne 0 ] && [ ! -s "$bb_magic/mke2fs.log" ]; then
+		ok "BusyBox 下 ext 魔数不格式化"
+	else
+		bad "BusyBox 下 ext 魔数不格式化" "$(cat "$workdir/last.out")"
+	fi
+
+	bb_nz=$workdir/bb-nz
+	mkdir -p "$bb_nz"
+	make_fake_mke2fs "$bb_nz" 0
+	make_fake_blkid "$bb_nz" 2
+	nz=$workdir/bb-nz.img
+	zero_file "$nz"
+	printf '\001' | dd of="$nz" bs=1 seek=100 conv=notrunc status=none
+	run_format "busybox 非零" \
+		PATH="$bb_nz:$bb_path" \
+		DATA_FORMAT_ALLOW_FILE=1 \
+		DATA_DEV="$nz"
+	if [ "$RUN_RC" -ne 0 ] && [ ! -s "$bb_nz/mke2fs.log" ]; then
+		ok "BusyBox 下非零字节不格式化"
+	else
+		bad "BusyBox 下非零字节不格式化" "$(cat "$workdir/last.out")"
+	fi
+
+	if ! command -v mke2fs >/dev/null 2>&1 || ! command -v blkid >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+		bad "BusyBox GPT 尾部测试需要 mke2fs、blkid 和 python3"
+	else
+		gptbb=$workdir/gpt-bb
+		mkdir -p "$gptbb"
+		python3 - "$gptbb" << 'PY'
+import struct, sys, uuid, zlib, pathlib
+out = pathlib.Path(sys.argv[1])
+SS = 512
+
+def crc(b):
+    return zlib.crc32(b) & 0xFFFFFFFF
+
+def guid(s):
+    return uuid.UUID(s).bytes_le
+
+def header(my, alt, first, last, disk, entry_lba, entries):
+    h = bytearray(512)
+    h[0:8] = b"EFI PART"
+    struct.pack_into("<I", h, 8, 0x00010000)
+    struct.pack_into("<I", h, 12, 92)
+    struct.pack_into("<Q", h, 24, my)
+    struct.pack_into("<Q", h, 32, alt)
+    struct.pack_into("<Q", h, 40, first)
+    struct.pack_into("<Q", h, 48, last)
+    h[56:72] = guid(disk)
+    struct.pack_into("<Q", h, 72, entry_lba)
+    struct.pack_into("<I", h, 80, 128)
+    struct.pack_into("<I", h, 84, 128)
+    struct.pack_into("<I", h, 88, crc(entries))
+    struct.pack_into("<I", h, 16, crc(bytes(h[:92])))
+    return bytes(h)
+
+def entry(start, end, name):
+    e = bytearray(128)
+    e[0:16] = guid("0fc63daf-8483-4772-8e79-3d69d8477de4")
+    e[16:32] = guid(str(uuid.uuid4()))
+    struct.pack_into("<Q", e, 32, start)
+    struct.pack_into("<Q", e, 40, end)
+    nb = name.encode("utf-16le")
+    e[56:56+len(nb)] = nb
+    return bytes(e)
+
+def entries(items):
+    raw = b"".join(items)
+    return raw + b"\x00" * (128 * 128 - len(raw))
+
+total = 16384
+part_start = 2048
+# 分区一直铺到盘尾,末尾 33 扇区是备份 GPT。挑一个头 CRC >= 2^31 的盘 GUID,
+# BusyBox awk 的 printf %u 会把这种值钳成 2147483648。
+ent = entries([entry(part_start, total - 34 - 1, "data")])
+picked = None
+for n in range(1, 10001):
+    disk = str(uuid.UUID(int=n))
+    backup = header(total - 1, 1, 34, total - 34 - 1, disk, total - 33, ent)
+    stored = struct.unpack_from("<I", backup, 16)[0]
+    if stored >= 2**31:
+        picked = (disk, backup, stored)
+        break
+if picked is None:
+    raise SystemExit("no high header crc")
+disk, backup, stored = picked
+img = bytearray(total * SS)
+img[(total - 33) * SS:(total - 33) * SS + len(ent)] = ent
+img[(total - 1) * SS:(total - 1) * SS + 512] = backup
+part = bytes(img[part_start * SS:total * SS])
+(out / "over-part.bin").write_bytes(part)
+(out / "crc.txt").write_text(str(stored))
+PY
+		crc_hi=$(cat "$gptbb/crc.txt")
+		if [ "$crc_hi" -ge 2147483648 ]; then
+			ok "备份 GPT 头 CRC 落在 BusyBox %u 会钳位的范围 ($crc_hi)"
+		else
+			bad "备份 GPT 头 CRC 落在 BusyBox %u 会钳位的范围" "$crc_hi"
+		fi
+		cp "$gptbb/over-part.bin" "$gptbb/over-copy.bin"
+		set +e
+		out=$(env PATH="$bb_path" DATA_FORMAT_ALLOW_FILE=1 DATA_PART_START=2048 DATA_DEV="$gptbb/over-copy.bin" "$FMT" 2>&1)
+		rc=$?
+		set -e
+		printf '%s\n' "$out" > "$workdir/last.out"
+		label=$(blkid -p -D -s LABEL -o value "$gptbb/over-copy.bin" 2>/dev/null || true)
+		python3 - "$gptbb/over-part.bin" "$gptbb/over-copy.bin" "$gptbb/tail.txt" << 'PY'
+import sys
+a = open(sys.argv[1], "rb").read()
+b = open(sys.argv[2], "rb").read()
+tail = 33 * 512
+open(sys.argv[3], "w").write("yes" if a[-tail:] == b[-tail:] and len(a) == len(b) else "no")
+PY
+		same=$(cat "$gptbb/tail.txt")
+		if [ "$rc" -eq 0 ] && [ "$label" = data ] && [ "$same" = yes ]; then
+			ok "BusyBox 下高 CRC 的备份 GPT 尾部被保留"
+		else
+			bad "BusyBox 下高 CRC 的备份 GPT 尾部被保留" "rc=$rc label=$label tail=$same" "$out"
+		fi
+		cp "$gptbb/over-part.bin" "$gptbb/bad-tail.bin"
+		before=$(wc -c < "$gptbb/bad-tail.bin" | tr -d ' ')
+		dd if=/dev/zero of="$gptbb/bad-tail.bin" bs=1 seek=$((before - 512 + 16)) count=4 conv=notrunc status=none
+		bb_bad=$workdir/bb-bad-tail
+		mkdir -p "$bb_bad"
+		make_fake_mke2fs "$bb_bad" 0
+		run_format "busybox 坏 GPT" \
+			PATH="$bb_bad:$bb_path" \
+			DATA_FORMAT_ALLOW_FILE=1 \
+			DATA_PART_START=2048 \
+			DATA_DEV="$gptbb/bad-tail.bin"
+		if [ "$RUN_RC" -ne 0 ] && [ ! -s "$bb_bad/mke2fs.log" ]; then
+			ok "BusyBox 下备份 GPT 校验失败时不格式化"
+		else
+			bad "BusyBox 下备份 GPT 校验失败时不格式化" "$(cat "$workdir/last.out")"
+		fi
+	fi
 fi
 
 echo

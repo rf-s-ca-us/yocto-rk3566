@@ -10,6 +10,13 @@
 # 字节全是 0。末尾若是校验通过的标准备份 GPT(128 项),那段不写入,它前面
 # 仍须全是 0。其它文件系统、加密、损坏、对不上的 GPT、I/O 错误都不格式化。
 # mke2fs 不加强制开关,失败不重试。DATA_FORMAT_ALLOW_FILE 只给宿主机测试用。
+#
+# 板上是 poky scarthgap 的 BusyBox 1.36.1,三处和 GNU 不一样,写错就直接退出 1:
+#   CONFIG_FEATURE_DD_STATUS 关着,dd 不认 status=none / status=noxfer
+#   CONFIG_FEATURE_DD_IBS_OBS 关着,dd 不认 conv= / ibs= / obs= / iflag= / oflag=
+#   CONFIG_DESKTOP 关着,od 只有 -aBbcDdeFfHhIiLlOovXx,没有 -A/-t/-j/-N
+# 读字节用 hexdump -v -n -s -e(这块配置里开着,和宿主机 hexdump 的输出一致)。
+# BusyBox awk 的 printf %u/%d 大于 2^31-1 会钳成 2147483648,整数用 %.0f。
 set -eu
 
 DEV=${DATA_DEV:-/dev/disk/by-partlabel/data}
@@ -20,20 +27,36 @@ log() {
 	echo "format-data: $*"
 }
 
+# 十进制字节,空格分隔。调用方再核对个数。hexdump 失败时 awk 看不到字节。
+read_bytes() {
+	hexdump -v -s "$2" -n "$3" -e '1/1 "%u "' "$1"
+}
+
+# 小端 32 位。不用 od -tu4:那是本机字节序,而且 poky 的 od 没有 -t/-j/-N。
 read_le32() {
-	od -An -tu4 -j "$2" -N 4 "$1" | awk '{print $1}'
+	read_bytes "$1" "$2" 4 | awk '
+		{
+			for (i = 1; i <= NF; i++) b[++n] = $i + 0
+		}
+		END {
+			if (n != 4) exit 2
+			printf "%.0f\n", b[1] + 256 * b[2] + 65536 * b[3] + 16777216 * b[4]
+		}
+	'
 }
 
 crc32_92() {
-	od -An -tu1 -N 92 "$1" | awk '
-		function bxor(a, b,    i, r, xa, xb) {
+	read_bytes "$1" 0 92 | awk '
+		function bxor(a, b,    i, r, xa, xb, bit) {
 			r = 0
+			bit = 1
 			for (i = 0; i < 32; i++) {
 				xa = a % 2
 				xb = b % 2
-				if (xa != xb) r += 2 ^ i
+				if (xa != xb) r += bit
 				a = int(a / 2)
 				b = int(b / 2)
+				bit *= 2
 			}
 			return r
 		}
@@ -54,7 +77,7 @@ crc32_92() {
 					else crc = int(crc / 2)
 				}
 			}
-			printf "%u\n", bxor(crc, 4294967295)
+			printf "%.0f\n", bxor(crc, 4294967295)
 		}
 	'
 }
@@ -69,11 +92,20 @@ writable_bytes() {
 	fi
 	sectors=$((bytes / 512))
 	hdr=$(mktemp)
-	dd if="$dev" of="$hdr" bs=512 count=1 skip=$((sectors - 1)) status=none 2>/dev/null || {
+	dd if="$dev" of="$hdr" bs=512 count=1 skip=$((sectors - 1)) 2>/dev/null || {
 		rm -f "$hdr"
 		return 1
 	}
-	sig=$(dd if="$hdr" bs=8 count=1 status=none 2>/dev/null || true)
+	got=$(wc -c < "$hdr" | tr -d ' ')
+	if [ "$got" -ne 512 ]; then
+		rm -f "$hdr"
+		return 1
+	fi
+	# 短读在 BusyBox 和 GNU dd 上都是退出 0。扇区没读满不能当成「没有 GPT」。
+	sig=$(dd if="$hdr" bs=8 count=1 2>/dev/null) || {
+		rm -f "$hdr"
+		return 1
+	}
 	if [ "$sig" != "EFI PART" ]; then
 		rm -f "$hdr"
 		echo "$bytes"
@@ -127,12 +159,12 @@ range_is_zero() {
 			n=$((bytes - off))
 		fi
 		if [ $((off % 4096)) -eq 0 ] && [ $((n % 4096)) -eq 0 ]; then
-			dd if="$dev" of="$tmp" bs=4096 skip=$((off / 4096)) count=$((n / 4096)) status=none 2>/dev/null || {
+			dd if="$dev" of="$tmp" bs=4096 skip=$((off / 4096)) count=$((n / 4096)) 2>/dev/null || {
 				rm -f "$tmp"
 				return 2
 			}
 		else
-			dd if="$dev" of="$tmp" bs=1 skip="$off" count="$n" status=none 2>/dev/null || {
+			dd if="$dev" of="$tmp" bs=1 skip="$off" count="$n" 2>/dev/null || {
 				rm -f "$tmp"
 				return 2
 			}
@@ -285,11 +317,21 @@ if [ "$rc" -ne 2 ]; then
 	exit 1
 fi
 
-magic=$(dd if="$DEV" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)
-if [ "$magic" = "53ef" ]; then
-	log "$DEV 有 ext 超级块魔数,不格式化"
-	exit 1
-fi
+# 读不满两个字节就拒绝。以前用 od -An -tx1,poky 的 od 会直接报错,
+# 错误被吃掉后魔数变成空,ext 超级块会被当成「没有魔数」。
+magic=$(hexdump -v -s 1080 -n 2 -e '1/1 "%02x"' "$DEV" 2>/dev/null) || magic=
+case "$magic" in
+	53ef)
+		log "$DEV 有 ext 超级块魔数,不格式化"
+		exit 1
+		;;
+	[0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+		;;
+	*)
+		log "读取 $DEV 偏移 1080 的魔数失败,拒绝格式化"
+		exit 1
+		;;
+esac
 
 if [ -b "$DEV" ]; then
 	if ! command -v blockdev >/dev/null 2>&1; then
@@ -357,7 +399,7 @@ fi
 
 if [ "$limit" -ne "$dev_bytes" ]; then
 	# 只取签名 8 字节。整扇区里签名后面就是 0,放进 shell 变量会被截断或带上后续字节。
-	sig=$(dd if="$DEV" bs=1 skip=$((dev_bytes - 512)) count=8 status=none 2>/dev/null || true)
+	sig=$(dd if="$DEV" bs=1 skip=$((dev_bytes - 512)) count=8 2>/dev/null || true)
 	if [ "$sig" != "EFI PART" ]; then
 		log "格式化改写了末尾的备份 GPT"
 		exit 1
