@@ -48,8 +48,8 @@ IMAGE_INSTALL:append = " lubancat-ssh-authkeys lubancat-wifi"
 # 两边的偏移必须同源 —— fw_env.config 的注释里写着对齐关系。
 IMAGE_INSTALL:append = " libubootenv libubootenv-bin lubancat-fw-env"
 
-# A/B OTA 阶段 2:RAUC 本体(system.conf 由 lubancat-rauc-conf 提供,无
-# keyring,拍板 3)+ 板上客户端(timer 拉取/比对/流式安装 + 自检 mark-good)。
+# A/B OTA 阶段 2:RAUC 本体(system.conf 与验签证书 /etc/rauc/keyring.pem
+# 由 lubancat-rauc-conf 提供)+ 板上客户端(timer 拉取/比对/流式安装 + 自检 mark-good)。
 # meta-rauc 匿名 python 会给 rauc 追加 RDEP u-boot-fw-utils(boothelper),
 # 该名字由 poky libubootenv recipe 的 RPROVIDES:${PN}-bin 闭环——上面那行的
 # libubootenv-bin 本身就是它,无需(也不可)另配同名 recipe:那样会构成双
