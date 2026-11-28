@@ -10,12 +10,63 @@ require recipes-core/images/core-image-minimal.bb
 # 不继承它的话:只出 rootfs.tar.gz + 内核,没有 u-boot、没有 wic,烧不了卡。
 inherit rockchip-image
 
-# 在 Yocto 原有容量计算结果上,给每份 rootfs 再加 4 GiB(单位 KiB)。
-# 用追加表达式保留 core-image-minimal 为 systemd 预留的空间;
-# image.bbclass 在原有 overhead/minimum 之后求和,不会把新增空间乘以余量系数。
-# 必须在文件系统生成阶段增加,使 Rockchip 打包路径拿到的 ext4 也实际扩容。
-# WIC 两个 rootfs 槽关闭自己的二次余量,直接使用同一 ROOTFS_SIZE。
-IMAGE_ROOTFS_EXTRA_SPACE:append = " + 4194304"
+# 已经烧进板子的 A/B 槽是 wks 里的 --fixed-size(6729594 KiB =
+# 6891104256 字节)。再在「内容 × 1.3」上追加 4 GiB 会让 ext4 跟着内容
+# 涨:93-c5411847 的 rootfs.ext4 就是这样比槽多出 16384 字节,rauc 拒装。
+# 不要把已经生成的镜像截短或补齐 —— 那会毁 ext4。这里改的是生成尺寸。
+#
+# IMAGE_ROOTFS_SIZE 是下限(KiB),取「槽位 − 16 MiB − systemd 的 4096」。
+# core-image-minimal 在 DISTRO_FEATURES 含 systemd 时把
+# IMAGE_ROOTFS_EXTRA_SPACE 追加 " + 4096",image.bbclass 在下限之后才加上
+# 它,所以要先扣掉,最终 ROOTFS_SIZE 才正好是槽位减 16 MiB。
+# 16 MiB 是余量,不是把槽缩小:小包先吃文件系统里大约 4 GiB 的空闲
+# (槽位本来就是按「内容 + 4 GiB」烧出来的),镜像文件保持不动。
+# 内容本身(含 1.3 倍)超过下限之后,镜像才开始涨。
+# IMAGE_ROOTFS_MAXSIZE 取槽位本身。get_rootfs_size() 在对齐后的 KiB
+# 大于它时直接 fatal,不许再编出装不进槽的 ext4。等于槽位仍然合法:
+# RAUC 只在 image > slot 时拒绝。
+# 数字从 wks 读,不在这里再写一遍。
+LUBANCAT_ROOTFS_SLOT_MARGIN_KIB = "16384"
+LUBANCAT_ROOTFS_SYSTEMD_EXTRA_KIB = "4096"
+# 在本文件解析时展开。匿名 python 执行时 FILE 可能已经指向同目录下的
+# bbappend,不能再拿 FILE 去拼路径。
+LUBANCAT_AB_WKS := "${THISDIR}/../../wic/lubancat-ab.wks.in"
+
+python () {
+    import os
+    import re
+
+    wks = os.path.normpath(d.getVar("LUBANCAT_AB_WKS"))
+    if not os.path.isfile(wks):
+        bb.fatal("找不到 A/B 分区表: %s" % wks)
+
+    sizes = []
+    with open(wks, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.split("#", 1)[0]
+            if "--part-name rootfs_a" not in line and "--part-name rootfs_b" not in line:
+                continue
+            match = re.search(r"--fixed-size\s+(\d+)[kK](?:\s|$)", line)
+            if not match:
+                bb.fatal("rootfs 槽缺少 --fixed-size <KiB>k: %s" % raw.rstrip())
+            sizes.append(int(match.group(1)))
+
+    if len(sizes) != 2 or sizes[0] != sizes[1]:
+        bb.fatal("rootfs_a 与 rootfs_b 的 --fixed-size 必须相同且各有一个,实为 %s" % sizes)
+
+    slot = sizes[0]
+    margin = int(d.getVar("LUBANCAT_ROOTFS_SLOT_MARGIN_KIB"))
+    systemd_extra = int(d.getVar("LUBANCAT_ROOTFS_SYSTEMD_EXTRA_KIB"))
+    image_kib = slot - margin - systemd_extra
+    if margin <= 0 or systemd_extra < 0 or image_kib <= 0:
+        bb.fatal("rootfs 槽位余量不是正数: slot=%d margin=%d systemd=%d" % (
+            slot, margin, systemd_extra))
+
+    d.setVar("IMAGE_ROOTFS_MAXSIZE", str(slot))
+    d.setVar("IMAGE_ROOTFS_SIZE", str(image_kib))
+    bb.note("A/B rootfs 槽 %d KiB,镜像下限 %d KiB(余量 %d KiB,systemd 额外 %d KiB)" % (
+        slot, image_kib, margin, systemd_extra))
+}
 
 # C4 验收要 ssh 通——没有它每次改都得插卡,迭代成本翻倍
 IMAGE_FEATURES:append = " ssh-server-openssh"
