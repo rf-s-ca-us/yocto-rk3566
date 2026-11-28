@@ -427,36 +427,37 @@ jobs:
       # 发布用的 rootfs.ext4 必须装进已经烧在板上的 A/B 槽。上限从 wks 的
       # --fixed-size 读。镜像没编出来就跳过;编出来却更大则失败,后面的
       # bundle 步是 success() 才跑,超大的不会被签名上传。
+      # deploy 里 *.rootfs.ext4 通常是软链,实体文件名带时间戳。找文件的
+      # 逻辑在 ci/check-rootfs-slot.sh --deploy,不要在这里再用 find -type f。
       - name: rootfs 槽位尺寸自查
         if: always()
         env:
           BITBAKE_CODE: ${{ steps.bitbake.outputs.code }}
         run: |
           d=build/tmp/deploy/images/$MACHINE
-          args=()
-          images=0
-          if [ -d "$d" ]; then
-            while IFS= read -r f; do
-              [ -n "$f" ] || continue
-              args+=(--image "$f")
-              images=$((images + 1))
-            done < <(find "$d" -maxdepth 1 -type f -name '*.rootfs.ext4' -print || true)
-            w=$(find "$d" -maxdepth 1 \( -type f -o -type l \) -name '*.wic' ! -name '*.ufs.wic' -print -quit || true)
-            if [ -n "${w:-}" ]; then
-              args+=(--wic "$w")
-            fi
-          fi
-          if [ "$images" -eq 0 ]; then
+          if [ ! -d "$d" ]; then
             if [ "${BITBAKE_CODE}" = "0" ]; then
               echo "::error::构建成功却找不到 rootfs.ext4,槽位尺寸自查无从做起"
               exit 1
             fi
-            if [ "${#args[@]}" -eq 0 ]; then
-              echo "::warning::构建未走到出片,跳过 rootfs 槽位尺寸自查"
-              exit 0
-            fi
+            echo "::warning::构建未走到出片,跳过 rootfs 槽位尺寸自查"
+            exit 0
           fi
-          ci/check-rootfs-slot.sh "${args[@]}"
+          set +e
+          ci/check-rootfs-slot.sh --deploy "$d"
+          rc=$?
+          set -e
+          # 3 = 目录在,但没有可用的 *.rootfs.ext4。构建没走完就跳过;
+          # bitbake 已经成功则这是漏检,必须红。
+          if [ "$rc" -eq 3 ]; then
+            if [ "${BITBAKE_CODE}" = "0" ]; then
+              echo "::error::构建成功却找不到 rootfs.ext4,槽位尺寸自查无从做起"
+              exit 1
+            fi
+            echo "::warning::构建未走到出片,跳过 rootfs 槽位尺寸自查"
+            exit 0
+          fi
+          exit "$rc"
 
       - name: dtb 自查
         if: always()

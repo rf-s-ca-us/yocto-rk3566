@@ -6,6 +6,13 @@
 # wic 的 k/K 是 KiB。失败线是槽位本身(image > slot 时 RAUC 拒绝,
 # 相等仍可装)。16 MiB 余量在 image recipe 里,不在这里再扣一次:
 # 余量被内容吃掉一部分时,只要还没越过槽,这一关就该过。
+#
+# --deploy 认的是 Yocto deploy 的惯用名 *.rootfs.ext4。bitbake 把实体
+# 写成带时间戳的 *.rootfs-<时间>.ext4,惯用名是指向它的软链(反过来也
+# 一样)。find -type f 会把软链漏掉,时间戳文件名又配不上 *.rootfs.ext4,
+# 于是构建成功也被报成「找不到镜像」(run 94)。这里用 -xtype f:普通文件,
+# 以及指向普通文件的软链,都算。尺寸用 stat -L,比的是目标文件。
+# 目录里没有这种名字时退出 3,方便调用方区分「没编出来」和「比槽大」。
 set -eu
 
 # CDPATH= 只作用于这一次 cd。
@@ -16,9 +23,10 @@ PRINT_ONLY=0
 WIC=
 DUMP=
 IMAGES=
+DEPLOY=
 
 usage() {
-	echo "usage: $0 [--wks FILE] [--print-limit] [--image FILE]... [--wic FILE | --sfdisk-dump FILE]" >&2
+	echo "usage: $0 [--wks FILE] [--print-limit] [--deploy DIR] [--image FILE]... [--wic FILE | --sfdisk-dump FILE]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -30,6 +38,10 @@ while [ "$#" -gt 0 ]; do
 	--print-limit)
 		PRINT_ONLY=1
 		shift
+		;;
+	--deploy)
+		DEPLOY=${2:-}
+		shift 2
 		;;
 	--image)
 		IMAGES="$IMAGES ${2:-}"
@@ -119,6 +131,26 @@ slot_sectors=$((slot_bytes / 512))
 note "rootfs 槽位上限: ${slot_bytes} 字节 (${slot_sectors} 扇区, ${slot_kib} KiB), 来源: $WKS"
 if [ "$PRINT_ONLY" -eq 1 ]; then
 	printf '%s\n' "$slot_bytes"
+fi
+
+# -xtype f:名字是 *.rootfs.ext4 的普通文件,或指向普通文件的软链。
+# 悬空软链不算(量不到目标)。-print 打出来的是软链自己的路径,
+# 下面 stat -L 再解析到带时间戳的实体。
+if [ -n "$DEPLOY" ]; then
+	if [ ! -d "$DEPLOY" ]; then
+		note "::error::找不到 deploy 目录 $DEPLOY"
+		exit 1
+	fi
+	found=$(find "$DEPLOY" -maxdepth 1 -xtype f -name '*.rootfs.ext4' -print)
+	if [ -z "$found" ]; then
+		note "deploy 目录里没有可用的 *.rootfs.ext4: $DEPLOY"
+		exit 3
+	fi
+	IMAGES="$IMAGES $(printf '%s\n' "$found" | tr '\n' ' ')"
+	if [ -z "$WIC" ] && [ -z "$DUMP" ]; then
+		WIC=$(find "$DEPLOY" -maxdepth 1 \( -type f -o -type l \) \
+			-name '*.wic' ! -name '*.ufs.wic' -print -quit || true)
+	fi
 fi
 
 fail=0
