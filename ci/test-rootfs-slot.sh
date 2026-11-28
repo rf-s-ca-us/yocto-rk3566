@@ -89,6 +89,55 @@ truncate -s 2097153 "$tmp/spills"
 expect "小槽位按 wks 而不是写死的字节数通过" 0 sh "$CHECK" --wks "$small" --image "$tmp/fits"
 expect "小槽位按 wks 而不是写死的字节数失败" 1 sh "$CHECK" --wks "$small" --image "$tmp/spills"
 
+# run 94:实体是 *.rootfs-<时间戳>.ext4,*.rootfs.ext4 只是软链。
+# find -type f -name '*.rootfs.ext4' 两个都对不上。
+echo "== deploy 软链布局"
+stamp_name=lubancat-image-minimal-rk3566-lubancat.rootfs-20261128041707.ext4
+link_name=lubancat-image-minimal-rk3566-lubancat.rootfs.ext4
+deploy_ok=$tmp/deploy-link-ok
+mkdir -p "$deploy_ok"
+truncate -s 2097152 "$deploy_ok/$stamp_name"
+ln -s "$stamp_name" "$deploy_ok/$link_name"
+expect "惯用名软链指向带时间戳的实体,尺寸在槽内" 0 \
+	sh "$CHECK" --wks "$small" --deploy "$deploy_ok"
+
+deploy_over=$tmp/deploy-link-over
+mkdir -p "$deploy_over"
+truncate -s 2097153 "$deploy_over/$stamp_name"
+ln -s "$stamp_name" "$deploy_over/$link_name"
+expect "惯用名软链的目标比槽大 1 字节" 1 \
+	sh "$CHECK" --wks "$small" --deploy "$deploy_over"
+if ! grep -q '2097153' /tmp/rootfs-slot.err; then
+	echo "  FAIL 没有量到软链目标的 2097153 字节(可能只量了软链自身)"
+	fail=1
+else
+	echo "  ok   比的是软链目标的字节数"
+fi
+
+deploy_rev=$tmp/deploy-file-ok
+mkdir -p "$deploy_rev"
+truncate -s 2097152 "$deploy_rev/$link_name"
+ln -s "$link_name" "$deploy_rev/$stamp_name"
+expect "反过来:惯用名是实体,时间戳名是软链,尺寸在槽内" 0 \
+	sh "$CHECK" --wks "$small" --deploy "$deploy_rev"
+
+deploy_rev_over=$tmp/deploy-file-over
+mkdir -p "$deploy_rev_over"
+truncate -s 2097153 "$deploy_rev_over/$link_name"
+ln -s "$link_name" "$deploy_rev_over/$stamp_name"
+expect "反过来:惯用名实体比槽大 1 字节" 1 \
+	sh "$CHECK" --wks "$small" --deploy "$deploy_rev_over"
+
+deploy_empty=$tmp/deploy-empty
+mkdir -p "$deploy_empty"
+expect "空 deploy 目录算找不到镜像" 3 \
+	sh "$CHECK" --wks "$small" --deploy "$deploy_empty"
+deploy_stamp_only=$tmp/deploy-stamp-only
+mkdir -p "$deploy_stamp_only"
+truncate -s 2097152 "$deploy_stamp_only/$stamp_name"
+expect "只有带时间戳的实体、没有 *.rootfs.ext4 也算找不到" 3 \
+	sh "$CHECK" --wks "$small" --deploy "$deploy_stamp_only"
+
 bad=$tmp/bad.wks
 cat > "$bad" << 'EOF'
 part / --part-name rootfs_a --fixed-size 2048k
@@ -173,11 +222,12 @@ else
 fi
 
 echo "== workflow 接线"
-if grep -q 'ci/check-rootfs-slot.sh' .github/workflows/build.yml \
-	&& grep -q 'ci/test-rootfs-slot.sh' .github/workflows/build.yml; then
-	echo "  ok   构建与 gate 都会跑槽位检查"
+if grep -q 'ci/check-rootfs-slot.sh --deploy' .github/workflows/build.yml \
+	&& grep -q 'ci/test-rootfs-slot.sh' .github/workflows/build.yml \
+	&& ! grep -q "type f -name '\\*.rootfs.ext4'" .github/workflows/build.yml; then
+	echo "  ok   构建用 --deploy 找镜像,不再用 find -type f"
 else
-	echo "  FAIL workflow 没有接上槽位检查"
+	echo "  FAIL workflow 仍会漏掉 deploy 里的 rootfs.ext4 软链"
 	fail=1
 fi
 
