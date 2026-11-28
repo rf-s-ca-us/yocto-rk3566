@@ -72,3 +72,8 @@ bundle 先传 → latest.json 后传(S3 单对象 PUT 原子)。读侧要么看�
   缺 MD/BLK_DEV_DM/DM_VERITY/CRYPTO_SHA256,已由
   `meta-lubancat/recipes-kernel/linux/files/ota.cfg` 补齐并纳入 CI「内核配置自查」
   断言。**内核项未上板实测,§C1 见分晓。**
+- 同一条流式路径还要 `CONFIG_BLK_DEV_NBD=y`(编进内核,不是模块)。RAUC 挂
+  bundle 时解析 nbd netlink,这一步之前不会 modprobe。image 90 的内核该项
+  是 not set,所以那批板子的第一次升级不能 `rauc install <url>`,要先把
+  bundle 下到本地再 `rauc install`,或者整盘重烧。新内核起来之后,后面的
+  在线升级才能流式写槽。

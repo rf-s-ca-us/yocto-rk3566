@@ -52,6 +52,12 @@ rm -f "$out"
 echo "== kernel config"
 frag_c=$ROOT/meta-lubancat/recipes-kernel/linux/files/container.cfg
 frag_o=$ROOT/meta-lubancat/recipes-kernel/linux/files/ota.cfg
+if grep -qx 'CONFIG_BLK_DEV_NBD=y' "$frag_o" && ! grep -q '^CONFIG_BLK_DEV_NBD=m' "$frag_o"; then
+	echo "  ok   ota.cfg 要求 CONFIG_BLK_DEV_NBD=y(流式安装不能等模块)"
+else
+	echo "  FAIL ota.cfg 没有把 CONFIG_BLK_DEV_NBD 编进内核"
+	fail=1
+fi
 good=$(mktemp)
 {
 	sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=y.*/\1=y/p' "$frag_c" "$frag_o"

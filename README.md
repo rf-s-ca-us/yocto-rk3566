@@ -80,18 +80,29 @@ CI 为 OTA 设置 `OTA_VERSION = "<run_number>-<sha8>"`;本地不设置时
 
 ## rootfs 容量与 A/B 分区
 
-每份 rootfs 的容量按 **Yocto 原有计算结果 + 4 GiB** 生成,随系统内容增长,
-不固定为 4 GiB。image recipe 的 `IMAGE_ROOTFS_EXTRA_SPACE` 以 KiB 为单位,
-追加 `4194304`,保留上游的容量余量、最小容量和 systemd 额外空间。
-最终容量仍遵循上游对齐规则;4 GiB 是新增的文件系统容量,`df` 显示的可用
-空间还会扣除 ext4 元数据和保留块。
+已经烧录的板子上,`rootfs_a` / `rootfs_b`(`mmcblk0p3` 与 `p4`)各是
+**13459188 个 512 字节扇区 = 6,891,104,256 字节**。这个数写在
+`lubancat-ab.wks.in` 的 `--fixed-size 6729594k`(6729594 KiB,wic 的 `k`
+是 KiB),是分区表的真源。在线升级不改分区表,所以每一份打进 bundle 的
+`rootfs.ext4` 都必须 ≤ 这个槽。
 
-`lubancat-ab.wks.in` 的 `rootfs_a`、`rootfs_b` 都使用该容量,并设置
-`--overhead-factor 1 --extra-space 0`,避免 WIC 再次放大。
-独立 ext4 产物也已经扩容,因此 WIC 与 Rockchip `update.img` 两条烧录路径
-都能获得新增的文件系统容量。A/B 两槽容量相同,引导相关分区与 PARTUUID 不变。
+镜像不再在内容之上追加 4 GiB。那样做时 ext4 会跟着内容涨,发布版
+`93-c5411847` 就比槽多了 16384 字节,`rauc install` 报 slot too small。
+生成尺寸钉在槽位减去 **16 MiB**:`IMAGE_ROOTFS_SIZE` 是下限,
+`core-image-minimal` 为 systemd 追加的 4096 KiB 加在下限之后,所以下限先
+扣掉这 4096,最终文件是槽位减 16 MiB。`IMAGE_ROOTFS_MAXSIZE` 等于槽位,
+算出来更大则构建失败。CI 再对最终 `rootfs.ext4` 的字节数做一次比较。
 
-例如原 rootfs 容量为 2.40 GiB,调整后每槽约 6.40 GiB,两槽合计约 12.80 GiB。
+这 16 MiB 是余量。槽里大约 4 GiB 的空闲还在(内容约 1.9 GiB,文件系统约
+6.40 GiB,`df` 还要再扣 ext4 元数据和保留块),小包先占用这份空闲,镜像
+文件不会跟着涨。内容本身(含 1.3 倍余量)超过下限之后,镜像才开始向槽位
+涨,涨过槽位就被 `IMAGE_ROOTFS_MAXSIZE` 和 CI 拦住。
+
+`--fixed-size` 与 wic 的 `--overhead-factor` / `--extra-space` 互斥。
+`--align 8192` 只对齐分区起点。两槽容量相同,引导相关分区与 PARTUUID 不变。
+新烧的卡和已经在跑的板子是同一个槽位大小。OTA 用的是 deploy 里那份较小的
+`rootfs.ext4`;wic 在分区里另外做一份刚好填满槽的文件系统,不拿那份去打 bundle。
+
 Rockchip `parameter` 保留最后的 `data:grow`,烧录时 data 分区使用剩余空间;
 直接写入 WIC 时,data 仍按布局中的 2 GiB 创建。烧录包不携带 grow 分区里的
 文件系统。首启只格式化分区名是 data、内容探测没有识别出文件系统或加密卷、
@@ -101,8 +112,8 @@ Rockchip `parameter` 保留最后的 `data:grow`,烧录时 data 分区使用剩�
 该目录会被改成只读,容器数据不会写进当前槽的 rootfs。WIC 里预先做好的 ext4
 因此保持 2 GiB,不会在首启被扩成整盘。
 
-这是新镜像的分区布局,不会在线调整已经运行的板子。重新烧录前备份需要保留的
-数据,并确认 eMMC 能容纳两份 rootfs、启动内容及所需的数据空间。
+p3/p4/p5 的尺寸保持不动,已经烧过的板子不用重分区就能装新的 rootfs。
+data 分区的首启规则不变。重新烧录前仍要备份需要保留的数据。
 
 ## 宿主机要求
 

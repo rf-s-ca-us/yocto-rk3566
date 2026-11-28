@@ -44,6 +44,10 @@ jobs:
           python3 ci/test-ab-boot.py
       - name: RAUC 签名密钥与镜像 keyring 自测
         run: ci/test-rauc-signing-key.sh
+      - name: 内核配置片段与 rootfs 槽位自测
+        run: |
+          ci/test-ci-guards.sh
+          ci/test-rootfs-slot.sh
       - name: 判断要不要编镜像
         id: decide
         env:
@@ -420,6 +424,40 @@ jobs:
           } | tee -a $GITHUB_STEP_SUMMARY
           exit $fail
 
+      # 发布用的 rootfs.ext4 必须装进已经烧在板上的 A/B 槽。上限从 wks 的
+      # --fixed-size 读。镜像没编出来就跳过;编出来却更大则失败,后面的
+      # bundle 步是 success() 才跑,超大的不会被签名上传。
+      - name: rootfs 槽位尺寸自查
+        if: always()
+        env:
+          BITBAKE_CODE: ${{ steps.bitbake.outputs.code }}
+        run: |
+          d=build/tmp/deploy/images/$MACHINE
+          args=()
+          images=0
+          if [ -d "$d" ]; then
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              args+=(--image "$f")
+              images=$((images + 1))
+            done < <(find "$d" -maxdepth 1 -type f -name '*.rootfs.ext4' -print || true)
+            w=$(find "$d" -maxdepth 1 \( -type f -o -type l \) -name '*.wic' ! -name '*.ufs.wic' -print -quit || true)
+            if [ -n "${w:-}" ]; then
+              args+=(--wic "$w")
+            fi
+          fi
+          if [ "$images" -eq 0 ]; then
+            if [ "${BITBAKE_CODE}" = "0" ]; then
+              echo "::error::构建成功却找不到 rootfs.ext4,槽位尺寸自查无从做起"
+              exit 1
+            fi
+            if [ "${#args[@]}" -eq 0 ]; then
+              echo "::warning::构建未走到出片,跳过 rootfs 槽位尺寸自查"
+              exit 0
+            fi
+          fi
+          ci/check-rootfs-slot.sh "${args[@]}"
+
       - name: dtb 自查
         if: always()
         run: |
@@ -613,6 +651,8 @@ jobs:
             echo "::error::bitbake 成功却找不到 rootfs.ext4,bundle 无从打起"
             exit 1
           fi
+          # 装不进现有 A/B 槽就不签名、不上传。ls 可能拿到软链,脚本按目标文件的表观大小比。
+          "${GITHUB_WORKSPACE}/ci/check-rootfs-slot.sh" --image "$rootfs"
           ep="${{ secrets.R2_ENDPOINT }}"
           bucket="${{ vars.R2_BUCKET }}"
 
